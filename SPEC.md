@@ -1,54 +1,79 @@
-# Build: an AI decision trader on Hyperliquid (inspired by jarrodwatts/jev-trader)
+# Hyperliquid decision trader — SPEC
 
-## Goal
+A model reads a live Hyperliquid order book on a fixed cadence and outputs a probability the price rises over the next 60 s. The bot turns that into buy / sell / hold, places real orders, and a local dashboard streams every decision, fill, cost and calibration statistic. Why and how success is judged: see PROBLEM.md. Interview record: `.pipeline/spec-interview.md`.
 
-My own project, inspired by https://github.com/jarrodwatts/jev-trader but not a port. Same core idea: a decision model reads a live order book and decides on a fixed cadence, the bot places real orders, and a dashboard streams every decision and fill live. Different venue, my own model, my own design.
+## Decisions (from the interview)
 
-Read his repo first (README, SPEC.md, CLAUDE.md, src/) to understand what works, then design this one fresh. Don't mirror his file layout, endpoints or event schema.
+| Topic | Decision |
+|---|---|
+| Stack | Python (SDK: `hyperliquid-python-sdk`, 0.24.0, maintained) |
+| Venue / market | Hyperliquid testnet by default, BTC perp (`COIN` configurable, BTC default) |
+| Cadence | One decision per fresh `l2Book` snapshot (~5.3 s apart, measured: `.pipeline/hl-update-rate.md`) |
+| Horizon | 60 s |
+| Model output | `p_up` only: P(mid at t+60 s > mid at t) |
+| Action | buy if `p_up >= GATE`, sell if `p_up <= 1-GATE`, else hold. `GATE` default 0.60 |
+| Order type | Marketable IOC limit (taker). Exits: reduce-only IOC at horizon |
+| Exit policy | Time exit: each entry is closed 60 s after it filled |
+| Decider deadline | 2 s; late means hold, logged as a late hold |
+| Calibration label | Sign of mid change over 60 s; ties dropped. Every decision is scored, traded or not |
+| Storage | SQLite (stdlib) |
+| Dashboard | FastAPI + SSE + static page, bound to 127.0.0.1 only |
+| Testnet caps | $50 max position, $10 max daily loss (same as mainnet) |
 
-## Ideas worth borrowing from his repo
-- Dry run with no key: real market data, real decisions, simulated fills.
-- One decision in flight; if the model misses its deadline, hold. Never act on stale state.
-- Fire-and-forget orders: show the intent immediately, and update position and P&L only when the exchange confirms the fill.
-- A lean hot path, with measured and published latency numbers.
-- A pluggable model with a mock stand-in, so everything works before the real model exists.
+**Assumptions I added (not your decisions; check them):**
+- While a position is open, a signal on the opposite side is treated as hold (logged as `blocked`). A same-side signal may add up to the position cap. Each entry keeps its own 60 s exit timer.
+- Size: notional scales linearly from the $10 exchange minimum at the gate to the position cap at `p = 0.80`, never above the cap (all configurable).
+- Consecutive order errors threshold: 3. Stale book threshold: no `l2Book` for 15 s (about 3 missed snapshots).
+- Daily loss is measured per UTC day on realized plus unrealized P&L after fees.
 
-## Where this one should differ
-- Venue: Hyperliquid, testnet by default.
-- Model: my fine-tuned decider over HTTP (MODEL=decider), plus mock for development. No TypeSafe/Jev API.
-- The model can abstain. His bot always trades; this one asks buy / sell / hold, and hold is a real decision, not just a late answer.
-- Size follows confidence. Trade only when the chosen side clears a configurable probability gate, and scale size with the model's probability, capped.
-- Show calibration live. Alongside P&L, the dashboard shows whether the model's stated probabilities match what happened (a simple reliability view and a running Brier score), since that decides whether the size-by-confidence idea is justified.
-- Costs are front and centre. No gas on Hyperliquid, but fees are real. Show P&L after fees and what it would have been before them.
+## Design proposal
+
+Modules (`src/jevhl/`): `config` (env, mainnet guard) · `rounding` (price and size to exchange rules) · `feed` (WS client, message parsing, staleness) · `model` (interface, `MockModel`, `DeciderModel` over HTTP) · `policy` (gate, abstain, confidence sizing, caps; pure functions) · `risk` (kill switch state machine) · `exchange` (SDK wrapper: place, close, cancel, flatten, fills; fee capture) · `paper` (dry-run fill simulation against the book) · `ledger` (positions, fees, P&L before and after fees, confirmed by exchange fills only) · `store` (SQLite) · `calibration` (labelling, Brier, baseline Brier, reliability bins) · `trader` (the loop: one decision in flight, hold when late) · `server` (FastAPI, SSE, static dashboard).
+
+Loop: new `l2Book` snapshot arrives → if a decision is already in flight or the book is older than the staleness bound, skip (hold) → ask model with a 2 s deadline → policy → fire order, show intent immediately → position and P&L change only on exchange fill confirmation (user-event WS and an `info` poll as a backstop).
+
+Model contract (mock and decider): input `{ts, coin, mid, spread_bps, bids[[px,sz]...10], asks[[px,sz]...10], recent_mids[last N], horizon_s}`; output `{p_up: float in [0,1]}`. The decider's real input and output format is decided at milestone 5 (asked then).
+
+Dashboard shows: live mid and markers, current decision (`p_up`, action, gate, size, latency), position, P&L after fees and before fees, cumulative fees, decision and late-hold counts, hold rate, reliability curve, running Brier vs baseline Brier with sample count, kill-switch state, connection state.
 
 ## Hard constraints
-- Testnet by default. Mainnet only if NETWORK=mainnet AND typed confirmation at startup, with hard caps: $50 max position, $10 max daily loss.
-- Use an API (agent) wallet key that can trade but not withdraw. Never my main wallet key. Never log or commit it; .env goes in .gitignore before it's created. No withdrawal or transfer code.
-- Kill switch on max daily loss, consecutive order errors, or a stale book: cancel, flatten with reduce-only, stop, and show it on the dashboard. Flatten on clean shutdown too.
-- Use a well-maintained Hyperliquid SDK for signing and orders; don't hand-roll signing. Round price and size to the exchange's rules, and test the rounding.
-- Stay well inside Hyperliquid's rate limits (look them up).
-- Ask before adding dependencies that need system packages.
 
-## Ask me first
-- Stack: Python or TypeScript? My recommendation is Python, since my decider and the planned calibration benchmark are Python, but give me the trade-off in two lines and let me choose.
-- Do I have a testnet account and an API wallet? If not, walk me through creating them in the Hyperliquid UI. I do those steps myself.
-- DECIDER_URL and its input/output format, only when we reach that backend.
+- Testnet default. Mainnet only with `NETWORK=mainnet` AND typed confirmation at startup; mainnet hard caps $50 position, $10 daily loss, not overridable by env.
+- API (agent) wallet key only. Key only from `.env`, which is in `.gitignore` before it exists. Never logged, never committed. No withdrawal or transfer code anywhere.
+- Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, stop, show on dashboard. Also flatten on clean shutdown.
+- Signing and orders only through the SDK. Price and size rounded to exchange rules (tick, lot, significant figures), and tested.
+- Well inside rate limits (`.pipeline/hl-facts.md`): one WS, few subscriptions, at most about 2 orders per minute plus light polling.
+- Ask before adding any dependency that needs system packages.
+- Pipeline rule: only the user merges. Mainnet is out of scope for this whole project.
 
-## Design it yourself, then show me
+## Tests (pytest, in the first milestone where each unit exists)
 
-Before writing code, propose in under a page: the module layout, the decision cadence and horizon (measure Hyperliquid's real update rate first), the order type (IOC vs post-only) with your reasoning, the model input/output contract, and what the dashboard shows. Wait for my OK.
+Rounding; hold-when-late; abstention and gating; confidence-scaled sizing with caps; kill switch (each trigger); dry-run fill simulation; parsing of realistic Hyperliquid messages (mocked fixtures); decider backend against a mocked server (success and timeout); calibration maths (Brier, baseline, reliability bins, tie dropping); mainnet guard.
 
-## Tests
+## Milestones
 
-Rounding, the hold-when-late rule, abstention and gating, confidence-scaled sizing with caps, the kill switch, dry-run fill simulation, parsing of realistic Hyperliquid messages (mocked), and the decider backend against a mocked server (success and timeout).
+### Milestone 1: Foundations and offline core
+Goal: tooling, tests and the pure logic, with no network. Scaffold (`uv`, ruff, pytest, CI), `config` with mainnet guard, `rounding`, `policy`, `risk`, `store`, `calibration`, `MockModel`.
+Acceptance: `uv run pytest` and `ruff check` green in CI. Tests cover rounding, gating and abstention, sizing and caps, each kill-switch trigger, calibration maths, mainnet guard.
 
-## Order of work
-1. Design proposal → my OK.
-2. Dry run with mock on real testnet data; tests pass; dashboard works.
-3. Testnet live orders with mock at minimum size for an hour. Check fills, position and P&L against the Hyperliquid testnet UI.
-4. Switch to decider.
-5. Stop. Mainnet is my decision, not part of this task.
+### Milestone 2: Live data and dry run
+Goal: real testnet market data, real mock decisions, simulated fills, no key needed. `feed`, `paper`, `ledger`, `trader` loop, latency logging to SQLite.
+Acceptance: dry run streams one decision per snapshot with no errors for 30 minutes; late-hold and stale-book behaviour proven in tests with mocked clocks and messages; message-parsing tests use realistic fixtures; latency percentiles computed from its own logs.
 
-## README
+### Milestone 3: Dashboard
+Goal: everything in the dashboard list above, live from the dry run. `server` plus static page.
+Acceptance: dashboard loads from 127.0.0.1 only, streams decisions and fills, shows after-fee and before-fee P&L, reliability curve and Brier vs baseline; reconnects after a dropped stream; history reloads from SQLite after restart.
 
-What it is and how it differs from jev-trader (credit his repo as the inspiration), how to run each mode, the safety model, measured latency, and an honest note: a short-horizon bot is expected to lose its fees unless the model has real edge. The calibration panel is how you'd find out.
+### Milestone 4: Testnet live orders
+Goal: real testnet orders with the mock at minimum size. `exchange` wrapper (place IOC, reduce-only close, cancel-all, flatten, fills and fees), `ledger` driven by confirmations, kill switch wired to flatten. User creates testnet account and API wallet themselves (guided).
+Acceptance: an hour of live testnet trading; fills, position, fees and P&L match the Hyperliquid testnet UI exactly (reconciliation script plus user's check); low daily-loss limit fires kill switch and flattens; wifi-off drill holds and never trades on stale data; very short decider deadline logs late holds.
+
+### Milestone 5: Decider backend and soak
+Goal: `MODEL=decider` over HTTP against `DECIDER_URL`; contract confirmed with the user then. Overnight unattended run.
+Acceptance: backend tested against a mocked server (success and timeout); overnight run with no crash and no growing memory; hold rate not stuck at 0% or 100%. Stop here: mainnet is the user's decision.
+
+(Evidence and README follow as pipeline steps 6 and 7: latency table from the bot's own logs, the calibration result, and an honest note that a short-horizon bot is expected to lose its fees unless the model has real edge.)
+
+## Out of scope
+
+Mainnet use; withdrawals or transfers; multiple markets at once; post-only/maker strategy; public deployment of the dashboard; backtesting; training the decider.
