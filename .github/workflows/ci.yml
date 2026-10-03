@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Milestone 1 adds pyproject.toml; until then there is nothing to lint or test.
+      - name: Sync
+        if: hashFiles('pyproject.toml') != ''
+        run: uv sync --locked
+      - name: Lint
+        if: hashFiles('pyproject.toml') != ''
+        run: uv run ruff check
+      - name: Test
+        if: hashFiles('pyproject.toml') != ''
+        run: uv run pytest

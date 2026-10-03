@@ -1,0 +1,36 @@
+# secrets
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# ml / experiment artifacts
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# local data and logs
+*.db
+*.db-journal
+*.sqlite*
+data/
+logs/
+*.log
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
