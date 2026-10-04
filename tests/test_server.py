@@ -69,9 +69,29 @@ def test_summary_calibration_three_horizons_with_sample_counts(db):
     c60 = cal[0]
     assert c60["n"] == 2
     assert c60["brier"] == pytest.approx(((0.9 - 1) ** 2 + (0.2 - 0) ** 2) / 2)
-    assert c60["baseline_running"] is not None
+    # labels [up, down]: running baseline predicts 0.5 then 1.0; in-sample predicts the mean 0.5
+    assert c60["baseline_running"] == pytest.approx((0.25 + 1.0) / 2)
+    assert c60["baseline_insample"] == pytest.approx(0.25)
     assert sum(b["count"] for b in c60["bins"]) == 2 and len(c60["bins"]) == 10
     assert c60["bins"][9]["mean_p"] == pytest.approx(0.9) and c60["bins"][9]["freq"] == 1.0
+
+
+def test_summary_each_horizon_reports_its_own_outcomes(db):
+    """One decision whose outcome differs per horizon: every entry must carry the numbers
+    (and the label) of its own horizon, in headline order."""
+    s = Store(db)
+    a = s.insert_decision(dec(1.0, p=0.8), 100.0)
+    s.resolve(a, 60, 101.0)  # up
+    s.resolve(a, 30, 99.0)  # down
+    s.resolve(a, 300, 101.0)  # up
+    s.resolve(s.insert_decision(dec(2.0, p=0.6), 100.0), 300, 99.0)  # only 300 s has a 2nd
+    cal = {c["horizon_s"]: c for c in build_summary(s, None)["calibration"]}
+    assert [c["horizon_s"] for c in build_summary(s, None)["calibration"]] == [60, 30, 300]
+    assert (cal[60]["n"], cal[30]["n"], cal[300]["n"]) == (1, 1, 2)
+    assert cal[60]["brier"] == pytest.approx(0.2**2)
+    assert cal[30]["brier"] == pytest.approx(0.8**2)
+    assert cal[300]["brier"] == pytest.approx((0.2**2 + 0.6**2) / 2)
+    assert cal[30]["bins"][8]["freq"] == 0.0 and cal[60]["bins"][8]["freq"] == 1.0
 
 
 def test_summary_without_live_marks_at_last_decision_mid(db):

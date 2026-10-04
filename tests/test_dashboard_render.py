@@ -81,3 +81,36 @@ def test_reliability_curve_drawn_for_each_horizon_with_60s_headline():
     assert page.index('id="rel-chart-60"') < page.index('id="rel-chart-30"')
     assert "60 s (headline)" in page
 
+
+
+def test_pnl_panel_labels_match_the_server_numbers():
+    out = render(snap(summary()))
+    assert dict(out["pnl"]) == {
+        "Mid": "100.00", "Position (base)": "0.25000", "Position $": "25.00",
+        "P&L after fees $": "+1.5000", "P&L before fees $": "+1.7500",
+        "Cumulative fees $": "0.2500",
+    }
+
+
+def test_counts_panel_shows_server_counts():
+    out = render(snap(summary()))
+    assert dict(out["counts"]) == {
+        "Decisions": "3", "Holds": "2", "Late holds": "1", "Hold rate": "66.7%", "Fills": "2",
+    }
+
+
+def test_brier_table_compares_against_the_running_baseline():
+    """baseline_insample (0.111) is deliberately far from baseline_running: showing or
+    comparing against the in-sample one would change the numbers and the verdicts."""
+    out = render(snap(summary()))
+    assert out["brier"] == [
+        ["60 s (headline)", "40", "0.2000", "0.2500", "beats baseline"],
+        ["30 s", "40", "0.3000", "0.2500", "no better than baseline"],
+        ["300 s", "40", "0.2500", "0.3000", "beats baseline"],
+    ]
+
+
+def test_brier_verdict_needs_enough_samples():
+    sm = summary()
+    sm["calibration"][0]["n"] = 29
+    assert render(snap(sm))["brier"][0][4] == "too few samples"

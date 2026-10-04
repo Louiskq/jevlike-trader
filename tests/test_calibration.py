@@ -100,7 +100,7 @@ def test_summary():
     assert s["n"] == 3
     assert s["brier"] == pytest.approx((0.01 + 0.04 + 0.09) / 3)
     assert s["baseline_insample"] == pytest.approx((2 / 3) * (1 / 3))
-    assert s["baseline_running"] is not None
+    assert s["baseline_running"] == pytest.approx((0.25 + 1.0 + 0.25) / 3)  # not the in-sample one
     e = summary([], [])
     assert e["n"] == 0 and e["brier"] is None and e["baseline_running"] is None
 

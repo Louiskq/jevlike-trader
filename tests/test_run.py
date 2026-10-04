@@ -104,17 +104,33 @@ def test_trader_live_reports_waiting_live_stale_and_kill():
         out.append(live())
         clock.t += cfg.stale_s - 0.5  # inside the bound
         out.append(live())
-        clock.t += 1.0  # past the bound
+        clock.t += 0.5  # exactly stale_s old: still live (the trader's own test is `>`)
+        out.append(live())
+        clock.t += 0.5  # past the bound
         out.append(live())
         tr.check_stale()
         out.append(live())
         return out
 
-    waiting, fresh, edge, stale, killed = asyncio.run(go())
+    waiting, fresh, inside, exact, stale, killed = asyncio.run(go())
     assert waiting == {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False}
     assert fresh["feed"] == "live" and fresh["mid"] == REAL[0].mid
-    assert edge["feed"] == "live" and stale["feed"] == "stale"
+    assert inside["feed"] == "live" and exact["feed"] == "live" and stale["feed"] == "stale"
     assert killed["kill_reason"] == "stale_book" and killed["stopped"] is True
+
+
+def _read_events(url, wanted, max_lines=400):
+    """Read an SSE stream until every event name in `wanted` has been seen after the
+    snapshot; returns the event names in order."""
+    names = []
+    with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 (loopback)
+        for _ in range(max_lines):
+            line = r.readline().decode()
+            if line.startswith("event: "):
+                names.append(line[7:].strip())
+                if set(wanted) <= set(names[1:]):
+                    break
+    return names
 
 
 def _get(url, n_lines=None):
@@ -146,6 +162,9 @@ def test_dry_run_with_dashboard_serves_page_and_stream_then_shuts_down(tmp_path)
         await asyncio.sleep(0.4)
         seen["state"] = json.loads(await asyncio.to_thread(_get, base + "/api/state"))
         seen["sse"] = await asyncio.to_thread(_get, base + "/events", 4)  # left open
+        seen["names"] = await asyncio.to_thread(
+            _read_events, base + "/events", {"decision", "summary"}
+        )
 
     async def go():
         tasks = []
@@ -156,7 +175,7 @@ def test_dry_run_with_dashboard_serves_page_and_stream_then_shuts_down(tmp_path)
         tr = await asyncio.wait_for(
             dry_run_with_dashboard(
                 Config(), db, store, AssetMeta("BTC", 5), books(), port=0, model=MockModel(seed=1),
-                clock=clock, duration_s=1.5, on_ready=ready,
+                clock=clock, duration_s=4.0, on_ready=ready,
             ),
             20,
         )
@@ -168,6 +187,9 @@ def test_dry_run_with_dashboard_serves_page_and_stream_then_shuts_down(tmp_path)
     assert seen["state"]["summary"]["decisions"] >= 1
     assert seen["sse"][0].startswith("retry:") and seen["sse"][2] == "event: snapshot\n"
     assert seen["state"]["summary"]["feed"] == "live"
+    # the live stream, not just its first lines: new decisions and fresh summaries follow
+    assert seen["names"][0] == "snapshot"
+    assert "decision" in seen["names"][1:] and "summary" in seen["names"][1:]
 
 
 def test_dashboard_stays_up_after_kill_switch_and_shows_it(tmp_path):
@@ -260,8 +282,12 @@ def test_dashboard_history_reloads_after_restart(tmp_path):
 
 
 def test_stopping_the_server_stops_the_trader(monkeypatch):
-    """Ctrl-C reaches uvicorn first; the bot must then flatten and stop too."""
+    """Ctrl-C reaches uvicorn first; the bot must then flatten and stop too, promptly and
+    because of the server-done callback (the books never end and there is no duration)."""
+    import tempfile
+
     import jevhl.run as run_mod
+    from jevhl.types import ModelOutput
 
     clock = Clock()
     captured = {}
@@ -272,8 +298,10 @@ def test_stopping_the_server_stops_the_trader(monkeypatch):
         return captured["server"]
 
     monkeypatch.setattr(run_mod, "make_server", spy)
-    tmp = Store(":memory:")
-    tmp.close()
+
+    class Buyer:
+        def predict(self, inp):
+            return ModelOutput(0.9)
 
     async def books():
         i = 0
@@ -285,24 +313,31 @@ def test_stopping_the_server_stops_the_trader(monkeypatch):
 
     async def go(db):
         async def stopper(port):
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
+            captured["stopped_at"] = time.monotonic()
             captured["server"].should_exit = True
 
         tasks = []
-        return await asyncio.wait_for(
+        tr = await asyncio.wait_for(
             dry_run_with_dashboard(
                 Config(), db, Store(db), AssetMeta("BTC", 5), books(), port=0,
-                model=MockModel(seed=1), clock=clock, duration_s=None,
+                model=Buyer(), clock=clock, duration_s=None,
                 on_ready=lambda p: tasks.append(asyncio.create_task(stopper(p))),
             ),
-            15,
+            5,  # without the callback this hangs forever; fail fast rather than after 15 s
         )
-
-    import tempfile
+        captured["returned_at"] = time.monotonic()
+        return tr
 
     with tempfile.TemporaryDirectory() as d:
-        tr = asyncio.run(go(d + "/s.db"))
-    assert tr.stopped
+        db = d + "/s.db"
+        tr = asyncio.run(go(db))
+        n_decisions = len(Store(db).decisions())
+        n_fills = len(Store(db).fills())
+    assert captured["returned_at"] - captured["stopped_at"] < 3
+    assert tr.stopped and n_decisions >= 2
+    assert n_fills >= 2  # it traded (bought) and then flattened on stop
+    assert abs(tr.ledger.position) < 1e-9
 
 
 # ---- port already in use ----
