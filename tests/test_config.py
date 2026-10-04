@@ -77,3 +77,22 @@ def test_frozen():
     c = Config.from_env({})
     with pytest.raises(AttributeError):
         c.gate = 0.7  # type: ignore[misc]
+
+
+ADDR = "0x" + "ab" * 20
+
+
+def test_account_address_is_read_and_defaults_to_none():
+    assert Config.from_env({}).account_address is None
+    assert Config.from_env({"HL_ACCOUNT_ADDRESS": ADDR}).account_address == ADDR
+
+
+@pytest.mark.parametrize("bad", ["0x1234", "ab" * 20, "0x" + "zz" * 20, "0x" + "ab" * 21])
+def test_malformed_account_address_is_rejected(bad):
+    with pytest.raises(ConfigError):
+        Config.from_env({"HL_ACCOUNT_ADDRESS": bad})
+
+
+def test_secret_key_is_not_in_the_repr():
+    c = Config.from_env({"HL_API_KEY": "0x" + "11" * 32})
+    assert "1111" not in repr(c)

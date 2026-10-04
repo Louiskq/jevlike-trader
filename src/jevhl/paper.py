@@ -13,20 +13,19 @@ from decimal import Decimal
 
 from .config import Config
 from .feed import Book
-from .rounding import AssetMeta, order_size, round_price, round_size
+from .rounding import AssetMeta, aggressive_price, order_size, reduce_size, round_size
 
 TAKER_FEE_RATE = 0.00045
-SLIPPAGE_BPS = 50
 
 
 def limit_price(side: str, book: Book, meta: AssetMeta) -> Decimal:
-    slip = Decimal(SLIPPAGE_BPS) / Decimal(10_000)
-    if side == "buy":
-        return round_price(Decimal(str(book.asks[0][0])) * (1 + slip), meta, up=True)
-    return round_price(Decimal(str(book.bids[0][0])) * (1 - slip), meta, up=False)
+    ref = book.asks[0][0] if side == "buy" else book.bids[0][0]
+    return aggressive_price(side, ref, meta)
 
 
 class PaperExchange:
+    live = False  # fills are simulated and stored here, synchronously
+
     def __init__(
         self,
         store,
@@ -48,16 +47,17 @@ class PaperExchange:
 
     def close(self, book: Book, side: str, size: float, position: float, ts: float) -> list[dict]:
         """Reduce-only IOC: never larger than the position, never in the growing direction."""
-        room = -position if side == "buy" else position
-        if room <= 0:
-            return []
-        # The float position carries summing error (0.000159999... for 0.00016): snap it to
-        # the nearest lot before the floor, or the last lot is left open.
-        room_d = Decimal(str(room)).quantize(Decimal(1).scaleb(-self._meta.sz_decimals))
-        sz = round_size(min(Decimal(str(size)), room_d), self._meta)
+        sz = reduce_size(side, size, position, self._meta)
         if sz <= 0:
             return []
         return self._execute(book, side, sz, ts)
+
+    def cancel_all(self) -> int:
+        return 0  # IOC orders never rest
+
+    def flatten(self, book: Book, position: float, ts: float) -> list[dict]:
+        """Close the whole position (reduce-only IOC)."""
+        return self.close(book, "sell" if position > 0 else "buy", abs(position), position, ts)
 
     def _execute(self, book: Book, side: str, sz: Decimal, ts: float) -> list[dict]:
         limit = limit_price(side, book, self._meta)

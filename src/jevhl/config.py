@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+
+_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 
 
 class ConfigError(ValueError):
@@ -39,6 +42,9 @@ class Config:
     stale_s: float = 15
     max_order_errors: int = 3
     api_key: str | None = field(default=None, repr=False)
+    # The MAIN account's public address (not the API wallet's): the API wallet only signs, and
+    # asking info endpoints about the agent address returns nothing. Not a secret.
+    account_address: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -55,11 +61,14 @@ class Config:
             max_position_usd=_num(env, "MAX_POSITION_USD", 500),
             max_daily_loss_usd=_num(env, "MAX_DAILY_LOSS_USD", 100),
             api_key=env.get("HL_API_KEY") or None,
+            account_address=env.get("HL_ACCOUNT_ADDRESS") or None,
         )
         cfg.validate()
         return cfg
 
     def validate(self) -> None:
+        if self.account_address is not None and not _ADDRESS.fullmatch(self.account_address):
+            raise ConfigError("HL_ACCOUNT_ADDRESS must be 0x followed by 40 hex digits")
         if not 0.5 < self.gate < 1:
             raise ConfigError("GATE must be in (0.5, 1)")
         if self.gate >= self.full_size_p:
