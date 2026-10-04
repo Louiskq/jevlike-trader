@@ -46,6 +46,24 @@ CSP = (
 )
 
 
+class DashboardStartError(RuntimeError):
+    """The dashboard server could not start (typically: the port is already in use)."""
+
+
+async def serve(server: uvicorn.Server) -> None:
+    """server.serve(), but a startup failure raises DashboardStartError instead of the
+    SystemExit that uvicorn raises from inside serve() (which escapes asyncio.run)."""
+    try:
+        await server.serve()
+    except SystemExit:
+        if server.started:
+            raise
+        raise DashboardStartError(
+            f"cannot start the dashboard on {HOST}:{server.config.port}: "
+            "the port is already in use (or cannot be bound); pick another with --port"
+        ) from None
+
+
 def _clean(x):
     """Non-finite floats become None so the JSON is strictly valid."""
     if isinstance(x, float):

@@ -303,3 +303,75 @@ def test_stopping_the_server_stops_the_trader(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         tr = asyncio.run(go(d + "/s.db"))
     assert tr.stopped
+
+
+# ---- port already in use ----
+
+
+def _occupied_port():
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen()
+    return sock, sock.getsockname()[1]
+
+
+def test_port_in_use_is_a_clean_specific_error_and_nothing_is_traded(tmp_path):
+    from jevhl.server import DashboardStartError
+
+    clock = Clock()
+    db = str(tmp_path / "busy.db")
+    store = Store(db)
+    ready = []
+
+    async def books():
+        i = 0
+        while True:
+            clock.t = T0 + 5.3 * i
+            yield replace(REAL[i % 2], recv_ts=clock.t)
+            i += 1
+            await asyncio.sleep(0.05)
+
+    sock, port = _occupied_port()
+    try:
+        with pytest.raises(DashboardStartError, match=str(port)):
+            asyncio.run(
+                asyncio.wait_for(
+                    dry_run_with_dashboard(
+                        Config(), db, store, AssetMeta("BTC", 5), books(), port=port,
+                        model=MockModel(seed=1), clock=clock, duration_s=1.0,
+                        on_ready=ready.append,
+                    ),
+                    10,
+                )
+            )
+    finally:
+        sock.close()
+    assert ready == [] and store.decisions() == []
+
+
+def test_main_port_in_use_prints_one_error_line_no_traceback_no_url(
+    tmp_path, monkeypatch, capsys
+):
+    import jevhl.run as run_mod
+
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: AssetMeta("BTC", 5))
+    monkeypatch.setattr(run_mod, "stream_books", lambda *a, **k: _never_books())
+    db = tmp_path / "busy.db"
+    sock, port = _occupied_port()
+    try:
+        with pytest.raises(SystemExit) as exc:
+            run_mod.main(["--dashboard", "--port", str(port), "--db", str(db), "--seconds", "1"])
+    finally:
+        sock.close()
+    out, err = capsys.readouterr()
+    assert exc.value.code not in (0, None)
+    assert str(port) in err and "already in use" in err
+    assert "Traceback" not in err and "dashboard: http" not in out
+    assert Store(str(db)).decisions() == []
+
+
+async def _never_books():
+    for _ in ():
+        yield  # an async generator that yields nothing

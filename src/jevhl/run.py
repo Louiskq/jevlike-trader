@@ -22,7 +22,7 @@ from .ledger import Ledger
 from .model import MockModel
 from .paper import PaperExchange
 from .rounding import AssetMeta
-from .server import create_app, make_server
+from .server import DashboardStartError, create_app, make_server, serve
 from .store import Store
 from .trader import Trader, kill_switch_from_store
 
@@ -113,7 +113,7 @@ async def dry_run_with_dashboard(
     box: dict = {}
     app = create_app(db_path, live, should_stop=lambda: box["server"].should_exit)
     server = box["server"] = make_server(app, port=port)
-    server_task = asyncio.create_task(server.serve())
+    server_task = asyncio.create_task(serve(server))
 
     def server_done(_: asyncio.Future) -> None:  # Ctrl-C or a server failure stops the bot
         for t in traders:
@@ -122,8 +122,8 @@ async def dry_run_with_dashboard(
     server_task.add_done_callback(server_done)
     while not server.started:
         if server_task.done():
-            await server_task  # raises the startup failure, if any
-            raise RuntimeError("dashboard server exited before starting")
+            await server_task  # raises DashboardStartError on a startup failure
+            raise DashboardStartError("the dashboard server exited before starting")
         await asyncio.sleep(0.02)
     if on_ready is not None:
         on_ready(server.servers[0].sockets[0].getsockname()[1])
@@ -181,17 +181,22 @@ def main(argv: list[str] | None = None) -> None:
 
     async def go() -> Trader:
         if args.dashboard:
-            print(f"dashboard: http://127.0.0.1:{args.port}/ (Ctrl-C to stop)", flush=True)
+            def announce(port: int) -> None:  # only once the server is really listening
+                print(f"dashboard: http://127.0.0.1:{port}/ (Ctrl-C to stop)", flush=True)
+
             return await dry_run_with_dashboard(
                 cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
-                port=args.port, duration_s=args.seconds, linger_s=None,
+                port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
             )
         return await dry_run(
             cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
             duration_s=args.seconds,
         )
 
-    trader = asyncio.run(go())
+    try:
+        trader = asyncio.run(go())
+    except DashboardStartError as e:
+        raise SystemExit(f"error: {e}") from None
     print(format_report(store, trader))
 
 
