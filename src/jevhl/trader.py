@@ -213,6 +213,8 @@ class Trader:
         self._exits = []
 
     def _halt(self, reason: str | None) -> None:
+        if self.stopped:  # already halted (e.g. the watchdog tripped mid-decision)
+            return
         self.store.log_event(self._clock(), "kill_switch", reason or "")
         self._flatten()
         self.stopped = True

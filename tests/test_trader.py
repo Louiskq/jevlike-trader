@@ -420,6 +420,7 @@ def test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed():
     assert [f["side"] for f in store.fills()] == ["buy", "sell"]  # no fresh entry
     assert reasons(store)[-1] == ("hold", "killed")
     assert abs(tr.ledger.position) < 1e-9
+    assert [e["kind"] for e in store.events()].count("kill_switch") == 1
 
 
 # ---- float residue ----
