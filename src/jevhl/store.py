@@ -8,7 +8,7 @@ import sqlite3
 from .calibration import label
 from .types import Decision
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: fills keyed on exchange trade id (tid); no migration from v1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -28,14 +28,14 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE INDEX IF NOT EXISTS decisions_ts ON decisions(ts);
 CREATE TABLE IF NOT EXISTS fills (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tid INTEGER NOT NULL UNIQUE,
     oid INTEGER NOT NULL,
     ts REAL NOT NULL,
     coin TEXT NOT NULL,
     side TEXT NOT NULL,
     sz REAL NOT NULL,
     px REAL NOT NULL,
-    fee REAL NOT NULL,
-    UNIQUE (oid, ts, sz)
+    fee REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,13 +109,22 @@ class Store:
 
     # fills
     def insert_fill(
-        self, *, oid: int, ts: float, coin: str, side: str, sz: float, px: float, fee: float
+        self,
+        *,
+        tid: int,
+        oid: int,
+        ts: float,
+        coin: str,
+        side: str,
+        sz: float,
+        px: float,
+        fee: float,
     ) -> bool:
-        """Insert a fill; returns False if it was already stored."""
+        """Insert a fill; returns False if that exchange trade id (tid) was already stored."""
         cur = self._db.execute(
-            "INSERT OR IGNORE INTO fills (oid, ts, coin, side, sz, px, fee)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (oid, ts, coin, side, sz, px, fee),
+            "INSERT OR IGNORE INTO fills (tid, oid, ts, coin, side, sz, px, fee)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tid, oid, ts, coin, side, sz, px, fee),
         )
         self._db.commit()
         return cur.rowcount == 1

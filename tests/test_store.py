@@ -66,17 +66,24 @@ def test_scored_ordered_by_ts(store):
 
 
 def fill(**kw):
-    base = dict(oid=1, ts=1.0, coin="BTC", side="buy", sz=0.001, px=65000.0, fee=0.02)
+    base = dict(tid=1, oid=1, ts=1.0, coin="BTC", side="buy", sz=0.001, px=65000.0, fee=0.02)
     base.update(kw)
     return base
 
 
-def test_fill_dedup_on_oid_ts_sz(store):
+def test_fill_idempotent_on_tid(store):
     assert store.insert_fill(**fill()) is True
-    assert store.insert_fill(**fill()) is False
-    assert store.insert_fill(**fill(sz=0.002)) is True  # same oid, different size
-    assert store.insert_fill(**fill(ts=2.0)) is True
-    assert len(store.fills()) == 3
+    assert store.insert_fill(**fill()) is False  # same tid again: one row
+    assert len(store.fills()) == 1
+
+
+def test_fills_same_oid_ts_sz_different_tid_both_stored(store):
+    # One IOC sweeping two makers: same oid, time and size, different price and tid.
+    assert store.insert_fill(**fill(tid=1, px=65000.0)) is True
+    assert store.insert_fill(**fill(tid=2, px=65001.0)) is True
+    rows = store.fills()
+    assert [r["px"] for r in rows] == [65000.0, 65001.0]
+    assert [r["tid"] for r in rows] == [1, 2]
 
 
 def test_fill_fields(store):
@@ -96,11 +103,11 @@ def test_events(store):
 def test_schema_version_and_reopen(tmp_path):
     path = str(tmp_path / "t.db")
     s = Store(path)
-    assert s.schema_version() == 1
+    assert s.schema_version() == 2
     s.insert_decision(dec(), mid=1.0)
     s.close()
     s2 = Store(path)  # reopen: data persists, schema creation idempotent
-    assert len(s2.decisions()) == 1 and s2.schema_version() == 1
+    assert len(s2.decisions()) == 1 and s2.schema_version() == 2
     s2.close()
 
 
