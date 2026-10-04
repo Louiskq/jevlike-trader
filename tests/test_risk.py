@@ -143,3 +143,35 @@ def test_configurable_thresholds():
     ks.update_pnl(0)
     ks.update_pnl(-5)
     assert ks.tripped
+
+
+def test_day_start_pnl_survives_restart():
+    c = Clock()
+    ks = KillSwitch(CFG, c, day_start_pnl=-90.0)  # ledger rebuilt: -90 already lost today
+    ks.update_pnl(-90.0)
+    assert not ks.tripped
+    ks.update_pnl(-190.0)
+    assert ks.tripped and ks.reason == "daily_loss"
+
+
+def test_reset_keeps_day_baseline():
+    ks, _ = make()
+    ks.update_pnl(0.0)
+    ks.update_pnl(-100.0)
+    assert ks.reason == "daily_loss"
+    ks.reset()
+    assert not ks.tripped
+    ks.update_pnl(-101.0)  # day's loss still beyond limit: no fresh allowance
+    assert ks.reason == "daily_loss"
+
+
+def test_day_start_pnl_rolls_over_at_utc_midnight():
+    c = Clock()
+    ks = KillSwitch(CFG, c, day_start_pnl=-90.0)
+    ks.update_pnl(-150.0)  # -60 today
+    assert not ks.tripped
+    c.t = 11 * DAY + 1
+    ks.update_pnl(-200.0)  # new baseline -150: -50
+    assert not ks.tripped
+    ks.update_pnl(-250.0)
+    assert ks.reason == "daily_loss"

@@ -14,18 +14,24 @@ SECONDS_PER_DAY = 86400
 
 
 class KillSwitch:
-    def __init__(self, cfg: Config, clock: Callable[[], float]):
+    def __init__(self, cfg: Config, clock: Callable[[], float], day_start_pnl: float | None = None):
+        """day_start_pnl: cumulative P&L at the start of the current UTC day (e.g. rebuilt
+        from stored fills after a restart). If None, the first P&L seen is the baseline."""
         self._cfg = cfg
         self._clock = clock  # epoch seconds (UTC)
+        self._baseline = day_start_pnl
+        self._day: int | None = (
+            int(clock() // SECONDS_PER_DAY) if day_start_pnl is not None else None
+        )
+        self._pnl: float | None = None
         self.reset()
 
     def reset(self) -> None:
+        """Clear the latch and counters. The day's P&L baseline is kept on purpose, so a
+        reset mid-day does not grant a fresh daily-loss allowance."""
         self.reason: str | None = None
         self._errors = 0
         self._last_book: float | None = None
-        self._day: int | None = None
-        self._baseline: float | None = None
-        self._pnl: float | None = None
 
     @property
     def tripped(self) -> bool:

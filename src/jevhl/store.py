@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 
 from .calibration import label
 from .types import Decision
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: fills keyed on exchange trade id (tid); no migration from v1
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -27,14 +28,14 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE INDEX IF NOT EXISTS decisions_ts ON decisions(ts);
 CREATE TABLE IF NOT EXISTS fills (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tid INTEGER NOT NULL UNIQUE,
     oid INTEGER NOT NULL,
     ts REAL NOT NULL,
     coin TEXT NOT NULL,
     side TEXT NOT NULL,
     sz REAL NOT NULL,
     px REAL NOT NULL,
-    fee REAL NOT NULL,
-    UNIQUE (oid, ts, sz)
+    fee REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,10 +65,15 @@ class Store:
 
     # decisions
     def insert_decision(self, d: Decision, mid: float) -> int:
+        # An invalid probability (non-finite or outside [0, 1]) is never stored, even when
+        # the decision was held as "late", so it cannot reach calibration.
+        p = d.p_up
+        if p is not None and not (math.isfinite(p) and 0.0 <= p <= 1.0):
+            p = None
         cur = self._db.execute(
             "INSERT INTO decisions (ts, p_up, action, reason, size_usd, gate, latency_ms, mid)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (d.ts, d.p_up, d.action.value, d.reason, d.size_usd, d.gate, d.latency_ms, mid),
+            (d.ts, p, d.action.value, d.reason, d.size_usd, d.gate, d.latency_ms, mid),
         )
         self._db.commit()
         return int(cur.lastrowid)
@@ -103,13 +109,22 @@ class Store:
 
     # fills
     def insert_fill(
-        self, *, oid: int, ts: float, coin: str, side: str, sz: float, px: float, fee: float
+        self,
+        *,
+        tid: int,
+        oid: int,
+        ts: float,
+        coin: str,
+        side: str,
+        sz: float,
+        px: float,
+        fee: float,
     ) -> bool:
-        """Insert a fill; returns False if it was already stored."""
+        """Insert a fill; returns False if that exchange trade id (tid) was already stored."""
         cur = self._db.execute(
-            "INSERT OR IGNORE INTO fills (oid, ts, coin, side, sz, px, fee)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (oid, ts, coin, side, sz, px, fee),
+            "INSERT OR IGNORE INTO fills (tid, oid, ts, coin, side, sz, px, fee)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tid, oid, ts, coin, side, sz, px, fee),
         )
         self._db.commit()
         return cur.rowcount == 1

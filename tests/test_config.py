@@ -47,6 +47,14 @@ def test_limits_configurable_without_ceiling():
         {"GATE": "0.85"},  # not below full_size_p
         {"HORIZON_S": "0"},
         {"DECIDER_DEADLINE_S": "0"},
+        {"MAX_DAILY_LOSS_USD": "nan"},
+        {"MAX_DAILY_LOSS_USD": "inf"},
+        {"DECIDER_DEADLINE_S": "nan"},
+        {"MAX_POSITION_USD": "inf"},
+        {"MAX_POSITION_USD": "nan"},
+        {"HORIZON_S": "nan"},
+        {"HORIZON_S": "-inf"},
+        {"GATE": "nan"},
     ],
 )
 def test_invalid_values_raise(env):

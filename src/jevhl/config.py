@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -16,9 +17,12 @@ def _num(env: Mapping[str, str], name: str, default: float) -> float:
     if raw is None or raw == "":
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         raise ConfigError(f"{name} must be a number, got {raw!r}") from None
+    if not math.isfinite(value):
+        raise ConfigError(f"{name} must be finite, got {raw!r}")
+    return value
 
 
 @dataclass(frozen=True)

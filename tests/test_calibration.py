@@ -103,3 +103,11 @@ def test_summary():
     assert s["baseline_running"] is not None
     e = summary([], [])
     assert e["n"] == 0 and e["brier"] is None and e["baseline_running"] is None
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.5, float("nan"), float("inf")])
+def test_out_of_range_p_rejected(bad):
+    with pytest.raises(ValueError):
+        reliability_bins([bad], [0])
+    with pytest.raises(ValueError):
+        brier([bad], [0])

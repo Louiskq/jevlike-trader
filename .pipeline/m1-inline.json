@@ -1,0 +1,13 @@
+{
+  "commit_id": "615d979df5f068d18fb413367010550c096f5c36",
+  "event": "COMMENT",
+  "body": "Review trail for M1: reviewer findings fixed in separate commits. Left as-is at the review gate (user chose to leave): R5 stale check not armed until first book, R6 four settings not settable from env, R7 .gitignore lacks -wal/-shm, unused Side enum and stale_hold helper. R8 (spec amendment on this branch) is intentional and sits in its own commit e558bd4.",
+  "comments": [
+    {"path": "src/jevhl/config.py", "line": 23, "side": "RIGHT", "body": "Caught (reviewer): float() accepted nan/inf, so MAX_DAILY_LOSS_USD=nan silently disabled the daily-loss kill switch. Fixed in a7f596e."},
+    {"path": "src/jevhl/store.py", "line": 68, "side": "RIGHT", "body": "Caught (reviewer): an out-of-range p_up (1.5, -0.2, inf) was stored and reached calibration (infinite Brier, wrong bin). Stored as NULL now. Fixed in a987589."},
+    {"path": "src/jevhl/calibration.py", "line": 19, "side": "RIGHT", "body": "Caught (reviewer): probabilities outside [0,1] wrapped into the last reliability bin or crashed. Now rejected with ValueError. Fixed in a987589."},
+    {"path": "src/jevhl/store.py", "line": 31, "side": "RIGHT", "body": "Caught (reviewer): fills were de-duplicated on (oid, ts, sz), so one order sweeping two resting orders of equal size lost a fill. Keyed on the exchange trade id (tid) now. Fixed in 491f527."},
+    {"path": "src/jevhl/risk.py", "line": 17, "side": "RIGHT", "body": "Caught (reviewer): the daily-loss baseline was the first P&L the object saw, so a restart or reset() granted a fresh allowance the same UTC day. Baseline can now be supplied and survives reset(). Fixed in 222f9ad."},
+    {"path": "tests/test_policy.py", "line": 134, "side": "RIGHT", "body": "Caught (reviewer, break-it): setting EPS = 0.0 in policy.py passed all 107 tests. This test (gates 0.66/0.67/0.68 at the boundary) fails 3 times with the bug planted. Added in 615d979."}
+  ]
+}

@@ -128,3 +128,13 @@ def test_custom_gate_and_cap():
     assert d(0.30, cfg=cfg).action is Action.SELL  # 1 - 0.7 float noise
     assert d(0.80, cfg=cfg).size_usd == pytest.approx(1000)
     assert not math.isnan(d(0.75, cfg=cfg).size_usd)
+
+
+@pytest.mark.parametrize("gate,p_sell", [(0.67, 0.33), (0.66, 0.34), (0.68, 0.32)])
+def test_boundary_trades_for_non_float_exact_gates(gate, p_sell):
+    # 1 - p_sell is not exactly `gate` in floats; the EPS tolerance must still trade.
+    cfg = Config.from_env({"GATE": str(gate)})
+    sell = d(p_sell, cfg=cfg)
+    assert sell.action is Action.SELL and sell.reason == "signal"
+    buy = d(gate, cfg=cfg)
+    assert buy.action is Action.BUY and buy.reason == "signal"
