@@ -22,8 +22,8 @@ def test_offline_pipeline():
         out = model.predict(ModelInput(i * 5.0, "BTC", mid, 1.5, bids, asks))
         d = decide(out.p_up, 0.0, cfg, ts=i * 5.0, latency_ms=1.0)
         did = store.insert_decision(d, mid)
-        store.resolve(did, mid + rng.choice([-1.0, 0.0, 1.0]))
-    scored = store.scored()
+        store.resolve(did, 60, mid + rng.choice([-1.0, 0.0, 1.0]))
+    scored = store.scored(60)
     ps, ys = [p for p, _ in scored], [y for _, y in scored]
     s = summary(ps, ys)
     assert 0 < len(ps) <= 300 and s["n"] == len(ps)

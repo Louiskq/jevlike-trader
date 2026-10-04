@@ -17,6 +17,12 @@ class Action(StrEnum):
     HOLD = "hold"
 
 
+# Outcomes are recorded at these horizons for every decision (measurement only; trading, the
+# gate and exits use Config.horizon_s). Caveat: with one decision per ~5 s snapshot, samples
+# at longer horizons overlap more, so they are less independent (a 300 s window shares ~98%
+# of its span with its neighbour). Read 300 s Brier gaps with that in mind.
+HORIZONS_S = (30, 60, 300)
+
 REASONS = frozenset(
     {"signal", "below_gate", "blocked", "late", "stale", "cap_reached", "killed", "invalid"}
 )
