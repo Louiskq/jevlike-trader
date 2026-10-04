@@ -1,17 +1,24 @@
 """Render tests for static/app.js: the real page script runs under node against a minimal fake
 DOM built from the real index.html ids, fed one snapshot event. Needs `node` (see
-test_dashboard_js.py for the skip/fail policy)."""
+node_required.py for the skip/fail policy)."""
 
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+from node_required import require_node
+
+pytestmark = pytest.mark.usefixtures("node")
+
+
+@pytest.fixture(scope="module")
+def node():
+    require_node()
+
 STATIC = Path(__file__).parent.parent / "src" / "jevhl" / "static"
 IDS = re.findall(r'id="([^"]+)"', (STATIC / "index.html").read_text())
 

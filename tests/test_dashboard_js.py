@@ -1,15 +1,22 @@
 """Tests for static/logic.js (state updates and stream reconnection), run under node.
-They need `node` on PATH (present on the CI runner and on dev machines)."""
+They need `node` on PATH: a missing node skips locally and fails on CI (node_required.py)."""
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from node_required import require_node
+
 LOGIC = Path(__file__).parent.parent / "src" / "jevhl" / "static" / "logic.js"
-pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+pytestmark = pytest.mark.usefixtures("node")
+
+
+@pytest.fixture(scope="module")
+def node():
+    require_node()
+
 
 PRELUDE = f"""
 const L = require({json.dumps(str(LOGIC))});
