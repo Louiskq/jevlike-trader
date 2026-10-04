@@ -163,7 +163,8 @@ class Trader:
             self.store.log_event(self._clock(), "model_error", f"{type(e).__name__}: {e}")
             return hold("invalid", ts=ts, gate=cfg.gate, latency_ms=(self._perf() - t0) * 1000)
         latency_ms = (self._perf() - t0) * 1000
-        position_usd = self.ledger.position * inp.mid
+        pos = self.ledger.position
+        position_usd = (0.0 if abs(pos) < self._dust else pos) * inp.mid  # below a lot = flat
         return decide(out.p_up, position_usd, cfg, ts=ts, latency_ms=latency_ms)
 
     def _enter(self, book: Book, d: Decision, decision_id: int) -> None:

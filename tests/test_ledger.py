@@ -84,3 +84,10 @@ def test_day_start_pnl_boundary_is_utc_midnight_not_now():
     _fill(s, 1, midnight - 1, "buy", 0.001, 100.0, 0.0)  # position, marked at its own px
     _fill(s, 2, midnight + 0.5, "sell", 0.001, 90.0, 0.0)  # realises a loss, today
     assert day_start_pnl(s, midnight + DAY - 1) == pytest.approx(0.0)
+
+
+def test_float_residue_snaps_to_exactly_flat():
+    lg = Ledger()
+    for side, sz in [("buy", 0.00384), ("buy", 0.00385), ("sell", 0.00384), ("sell", 0.00385)]:
+        lg.apply_fill(side, sz, 65000.0, 0.0)
+    assert lg.position == 0.0

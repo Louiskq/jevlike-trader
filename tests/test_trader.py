@@ -389,3 +389,24 @@ def test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed():
     assert [f["side"] for f in store.fills()] == ["buy", "sell"]  # no fresh entry
     assert reasons(store)[-1] == ("hold", "killed")
     assert abs(tr.ledger.position) < 1e-9
+
+
+# ---- float residue ----
+
+
+def test_float_residue_after_closing_two_entries_does_not_block_opposite_signal():
+    model = StubModel(p=0.7)
+    tr, store, clock, _ = make(model=model)
+    run(tr.on_book(mkbook()))
+    clock.t += 10
+    model.p = 0.65  # different lot size, same side (leaves 4e-19 residue)
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    model.p = 0.5
+    clock.t = T0 + 100
+    run(tr.on_book(mkbook(recv_ts=clock.t)))  # both exits run
+    assert [f["side"] for f in store.fills()] == ["buy", "buy", "sell", "sell"]
+    model.p = 0.1
+    clock.t += 5.3
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert reasons(store)[-1] == ("sell", "signal")
+    assert tr.ledger.position < 0

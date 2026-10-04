@@ -11,6 +11,7 @@ import math
 from collections.abc import Iterable
 
 SECONDS_PER_DAY = 86400
+FLAT_EPS = 1e-12  # float residue from summing lots; far below any real lot size
 
 
 class Ledger:
@@ -26,6 +27,8 @@ class Ledger:
             raise ValueError(f"bad fill: sz={sz!r} px={px!r} fee={fee!r}")
         sign = 1 if side == "buy" else -1
         self.position += sign * sz
+        if abs(self.position) < FLAT_EPS:
+            self.position = 0.0
         self.cash -= sign * sz * px
         self.fees += fee
 
