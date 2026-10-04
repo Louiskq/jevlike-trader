@@ -156,7 +156,7 @@ class Exchange:
         """sdk: the SDK's Exchange (order, bulk_cancel). info: its Info (reads). address: the
         MAIN account's address. since_ms: where the first fill query starts."""
         self._sdk, self._info, self._address = sdk, info, address
-        self.meta, self._coin, self._min_notional = meta, coin, min_notional
+        self.meta, self.coin, self._min_notional = meta, coin, min_notional
         self._since_ms = int(since_ms)
         self._sleep = sleep
         self._confirm_tries, self._confirm_wait_s = confirm_tries, confirm_wait_s
@@ -184,7 +184,7 @@ class Exchange:
 
     def _place(self, side: str, sz: Decimal, limit: Decimal, reduce_only: bool) -> list[dict]:
         resp = self._sdk.order(
-            self._coin, side == "buy", float(sz), float(limit), IOC, reduce_only
+            self.coin, side == "buy", float(sz), float(limit), IOC, reduce_only
         )
         ack = parse_order_response(resp)
         if ack is None:
@@ -209,10 +209,10 @@ class Exchange:
 
     def cancel_all(self) -> int:
         """Cancel every resting order on this coin. Returns how many were cancelled."""
-        mine = [o for o in self._info.open_orders(self._address) if o.get("coin") == self._coin]
+        mine = [o for o in self._info.open_orders(self._address) if o.get("coin") == self.coin]
         if not mine:
             return 0
-        resp = self._sdk.bulk_cancel([{"coin": self._coin, "oid": o["oid"]} for o in mine])
+        resp = self._sdk.bulk_cancel([{"coin": self.coin, "oid": o["oid"]} for o in mine])
         if not isinstance(resp, dict) or resp.get("status") != "ok":
             raise ExchangeError(f"cancel failed: {resp!r}")
         return len(mine)
@@ -227,14 +227,14 @@ class Exchange:
         for attempt in range(self._flatten_tries + 1):
             try:
                 self.cancel_all()
-                pos = fetch_position(self._info, self._address, self._coin)
+                pos = fetch_position(self._info, self._address, self.coin)
                 if abs(pos) < self._dust:
                     return fills
                 if attempt == self._flatten_tries:
                     err = ExchangeError(f"position {pos} still open")
                     break
                 side = "sell" if pos > 0 else "buy"
-                ref = _finite(self._info.all_mids()[self._coin], "mid")
+                ref = _finite(self._info.all_mids()[self.coin], "mid")
                 sz = reduce_size(side, abs(pos), pos, self.meta)
                 fills += self._place(
                     side, sz, aggressive_price(side, ref, self.meta), reduce_only=True
@@ -246,17 +246,17 @@ class Exchange:
                 err = e
             if attempt < self._flatten_tries:
                 self._sleep(self._flatten_wait_s)
-        raise FlattenFailed(f"could not flatten {self._coin}: {err}", fills)
+        raise FlattenFailed(f"could not flatten {self.coin}: {err}", fills)
 
     # ---- reads ----
 
     def position(self) -> float:
-        return fetch_position(self._info, self._address, self._coin)
+        return fetch_position(self._info, self._address, self.coin)
 
     def sync_fills(self) -> list[dict]:
         """This coin's fills since the watermark (with a minute of overlap, so the caller
         must dedupe on tid). The watermark only moves forward."""
-        fills = fetch_fills(self._info, self._address, self._coin, self._since_ms)
+        fills = fetch_fills(self._info, self._address, self.coin, self._since_ms)
         if fills:
             newest = int(max(f["ts"] for f in fills) * 1000)
             self._since_ms = max(self._since_ms, newest - FILL_OVERLAP_MS)
