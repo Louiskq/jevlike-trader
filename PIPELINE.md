@@ -4,14 +4,14 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 1 (plan-first mode, branch feat/m1-offline-core)
-- Next action: fix R1-R4 (one commit each), batch-tests for B1, then review gate
-- Waiting on: merge gate (PR #6)
+- Current milestone: 2 (not started)
+- Next action: M2 kickoff: spec-change commit (multi-horizon) first, then mode gate
+- Waiting on: nothing (user to /clear then /pipeline)
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
 |---|---|---|---|---|
-| 1 | Foundations and offline core | #1 | feat/m1-offline-core, PR #6 | awaiting merge |
+| 1 | Foundations and offline core | #1 | PR #6 + follow-up PR #7 | merged, v0.1 |
 | 2 | Live data and dry run | #2 | | todo |
 | 3 | Dashboard | #3 | | todo |
 | 4 | Testnet live orders | #4 | | todo |
@@ -21,6 +21,10 @@
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
 - User chose no CLAUDE.md. Safety rules live in SPEC.md.
 - User override (2026-10-04): NO Co-Authored-By trailer on new commits or PR bodies (includeCoAuthoredBy=false). Pass this to builder. Earlier commits keep theirs; history not rewritten.
+- DECIDED by user (2026-10-04, "yes do this"): add multi-horizon labelling to M2. For every decision record the mid at 30 s, 60 s and 300 s and a label per horizon (ties dropped per horizon). Trading, the gate and exits still use HORIZON_S=60; the dashboard headline calibration/Brier is 60 s, with 30 s and 300 s shown alongside. Needed at M2 kickoff:
+  - FIRST commit on the M2 branch: amend SPEC.md (Decisions table: horizon row, Milestone 2 and 3 text) and DECISIONS.md, as its own spec-change commit.
+  - Store: replace single mid_future/label columns with an `outcomes(decision_id, horizon_s, mid_future, label)` table (schema v3, no data to migrate yet); `scored()` and calibration take a horizon argument.
+  - Brief the builder in plan mode; note overlap caveat (longer horizons overlap more) for the README.
 - M2: build KillSwitch with day_start_pnl computed from the store (cumulative realized+unrealized-fees at 00:00 UTC); insert_fill needs exchange tid; insert_decision nulls out-of-range p_up.
 - Patterns from M1 review (check these in every later build):
   - Parse numeric input with isfinite checks; NaN passes every comparison silently (guards, limits, deadlines).
@@ -47,3 +51,7 @@
 - 2026-10-04: user asked includeCoAuthoredBy=false; set in .claude/settings.local.json (gitignored); no co-author lines from now on (overrides pipeline default).
 - 2026-10-04: review gate done (nits left, no user catches); inline review posted; user decisions recorded in DECISIONS.md; PR description drafted.
 - 2026-10-04: PR description approved and applied; patterns added; records commit next.
+- 2026-10-04: user merged PR #6 at 15:17 UTC with head 3e63a40, before fixes reached main. Fixes + records are only on feat/m1-offline-core (6 commits ahead). Not merged by orchestrator.
+- 2026-10-04: follow-up PR #7 opened, ready, CI checked.
+- 2026-10-04: user approved multi-horizon labelling (30/60/300 s) for M2; recorded in notes, spec edit to be first commit on M2 branch.
+- 2026-10-04: PR #7 merged (0164fad); main verified (137 tests); v0.1 released; M1 done.
