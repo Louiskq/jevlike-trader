@@ -53,6 +53,7 @@ class Trader:
         self._model, self._paper, self._kill = model, paper, kill
         self._clock, self._perf = clock, perf
         self._inflight = False
+        self._model_task: asyncio.Future | None = None  # the worker thread's call, if running
         self._last_book: Book | None = None
         self._recent: list[float] = []
         self._exits: list[_Exit] = []
@@ -162,11 +163,15 @@ class Trader:
 
     async def _ask(self, inp: ModelInput, ts: float) -> Decision:
         cfg = self.cfg
+        if self._model_task is not None and not self._model_task.done():
+            # A timed-out call is still running in its thread: never start a second one.
+            return hold("late", ts=ts, gate=cfg.gate, latency_ms=cfg.deadline_s * 1000)
         t0 = self._perf()
+        task = asyncio.ensure_future(asyncio.to_thread(self._model.predict, inp))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # mark retrieved
+        self._model_task = task
         try:
-            out = await asyncio.wait_for(
-                asyncio.to_thread(self._model.predict, inp), cfg.deadline_s
-            )
+            out = await asyncio.wait_for(asyncio.shield(task), cfg.deadline_s)
         except TimeoutError:
             ms = max((self._perf() - t0) * 1000, cfg.deadline_s * 1000)
             return hold("late", ts=ts, gate=cfg.gate, latency_ms=ms)

@@ -204,6 +204,34 @@ def test_second_snapshot_while_decision_in_flight_is_skipped():
     assert [e["kind"] for e in store.events()] == ["skip"]
 
 
+def test_hung_model_thread_gets_no_second_predict_until_it_finishes():
+    import threading
+
+    release = threading.Event()
+    entered = []
+
+    class Hung:
+        def predict(self, inp):
+            entered.append(1)
+            release.wait(5)
+            return ModelOutput(p_up=0.9)
+
+    tr, store, clock, _ = make(cfg=Config(deadline_s=0.05), model=Hung(),
+                               perf=time.perf_counter)
+
+    async def scenario():
+        for i in range(3):
+            await tr.on_book(mkbook(recv_ts=clock.t + i))
+        assert len(entered) == 1  # later snapshots held as late, no new predict
+        release.set()
+        await asyncio.sleep(0.2)  # the worker finishes
+        await tr.on_book(mkbook(recv_ts=clock.t + 3))
+
+    run(scenario())
+    assert len(entered) == 2  # a fresh call is allowed once the old one is done
+    assert [r["reason"] for r in store.decisions()[:3]] == ["late", "late", "late"]
+
+
 # ---- trading and exits ----
 
 
