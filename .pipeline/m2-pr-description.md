@@ -42,9 +42,17 @@ Each deliberate bug was applied in a scratch worktree and the suite was run (bas
 
 ## Deviations from the spec
 1. Adds the `websockets` dependency (pure Python, no system packages).
-2. The 30-minute dry run required by the acceptance criteria has **not** been run yet. Only short smoke runs (130 s and 40 s against live testnet public data) were done.
 
 ## Verification
 - CI: lint and tests pass
 - Reproduce locally: `uv sync --locked && uv run ruff check && uv run pytest` (249 tests)
 - Smoke run: `uv run python -m jevhl.run --seconds 130 --db <scratch>/smoke.db` (25 decisions, 0 late holds, no errors)
+
+## 30-minute dry run (acceptance)
+`uv run python -m jevhl.run --seconds 1800` against live testnet public data, BTC, mock model, simulated fills, no key. Exit 0, kill switch not tripped. Full output: `.pipeline/dryrun/m2-30min.txt`.
+
+- 340 decisions in 1800 s (one per snapshot), 0 late holds, 0 stale holds, no parse or order errors.
+- Decision gap p50 5.33 s, p90 5.52 s. Model latency ms: p50 0.956, p90 2.079, p99 12.461, max 40.521.
+- 69 simulated fills, fees $1.6986.
+- Two disconnects, at about 10 and 20 minutes: the server closed the socket cleanly (code 1000, "Expired"). The feed reconnected within about 1.6 s each time with no missed decisions or stale holds.
+- Calibration (mock model, so near chance is expected): Brier vs running baseline, 30 s n=226 0.2472 vs 0.2533; 60 s n=260 0.2502 vs 0.2526; 300 s n=283 0.2524 vs 0.2529. These samples are small and the 300 s ones overlap about 98%, so none of this shows the model has edge.

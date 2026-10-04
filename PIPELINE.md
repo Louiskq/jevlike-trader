@@ -5,8 +5,8 @@
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
 - Current milestone: 2 (Normal mode, branch feat/m2-live-dry-run)
-- Next action: ready PR #8, CI, merge gate (30-min dry run decision pending)
-- Waiting on: user decision on 30-min dry run; then merge gate
+- Next action: merge gate for PR #8
+- Waiting on: merge gate (PR #8)
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -69,3 +69,4 @@
 - 2026-10-04: user chose to fix R4-R6 and investigate residue. R4 243845b; residue was a real bug (paper close floored 0.00015999.. to 0.00015) fixed a48d328; R5+R6 6754608. 249 tests; pushed. Still at review gate (user has not yet said done).
 - 2026-10-04: review gate done (user: 'seems good to me', no catches); inline review posted (10 comments); decisions gate: all 4 kept, user rationale 'no reason'; DECISIONS.md and PR description drafted.
 - 2026-10-04: PR description approved and applied.
+- 2026-10-04: 30-min dry run done (340 decisions, 0 late, 2 clean server-side reconnects, kill none); result added to PR body, .pipeline/dryrun/m2-30min.txt.

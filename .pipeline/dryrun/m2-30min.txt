@@ -1,0 +1,8 @@
+decisions 340  late holds 0  gap p50 5.33 s  p90 5.52 s
+model latency ms (n=340): p50 0.956  p90 2.079  p99 12.461  max 40.521
+calibration 30 s: n=226  brier 0.2472  baseline(running) 0.2533
+calibration 60 s: n=260  brier 0.2502  baseline(running) 0.2526
+calibration 300 s: n=283  brier 0.2524  baseline(running) 0.2529
+events {'connect': 3, 'disconnect': 2}  fills 69  fees $1.6986
+stopped=True kill=None
+exit 0
