@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 
 
 def label(mid_t: float, mid_future: float) -> int | None:
@@ -15,9 +16,16 @@ def label(mid_t: float, mid_future: float) -> int | None:
     return None
 
 
+def _check_probs(ps: Sequence[float]) -> None:
+    for p in ps:
+        if not (isfinite(p) and 0.0 <= p <= 1.0):
+            raise ValueError(f"probability outside [0, 1]: {p!r}")
+
+
 def brier(ps: Sequence[float], ys: Sequence[int]) -> float | None:
     if len(ps) != len(ys):
         raise ValueError("ps and ys must have the same length")
+    _check_probs(ps)
     if not ps:
         return None
     return sum((p - y) ** 2 for p, y in zip(ps, ys, strict=True)) / len(ps)
@@ -59,6 +67,7 @@ def reliability_bins(ps: Sequence[float], ys: Sequence[int], n: int = 10) -> lis
     """n equal-width bins over [0, 1]; p = 1.0 falls in the last bin; empty bins kept."""
     if len(ps) != len(ys):
         raise ValueError("ps and ys must have the same length")
+    _check_probs(ps)
     members: list[list[tuple[float, int]]] = [[] for _ in range(n)]
     for p, y in zip(ps, ys, strict=True):
         members[min(int(p * n), n - 1)].append((p, y))

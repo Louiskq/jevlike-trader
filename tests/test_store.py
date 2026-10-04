@@ -109,3 +109,22 @@ def test_sql_injection_is_inert(store):
     store.insert_decision(dec(), mid=1.0)
     assert len(store.decisions()) == 1
     assert store.events()[0]["kind"] == "x'); DROP TABLE decisions;--"
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.2, float("inf"), float("-inf"), float("nan")])
+@pytest.mark.parametrize("latency", [12.0, 10_000.0])  # on time -> invalid, late
+def test_out_of_range_p_never_scored(store, bad, latency):
+    from jevhl.config import Config
+    from jevhl.policy import decide
+
+    d = decide(bad, 0.0, Config(), ts=1.0, latency_ms=latency)
+    i = store.insert_decision(d, mid=1)
+    store.resolve(i, 2)
+    assert store.decisions()[0]["p_up"] is None
+    assert store.scored() == []
+
+
+def test_late_but_valid_p_still_scored(store):
+    d = Decision(1.0, 0.7, Action.HOLD, "late", 0.0, 0.6, 9999.0)
+    store.resolve(store.insert_decision(d, mid=1), 2)
+    assert store.scored() == [(0.7, 1)]

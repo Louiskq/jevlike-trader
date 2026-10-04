@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 
 from .calibration import label
@@ -64,10 +65,15 @@ class Store:
 
     # decisions
     def insert_decision(self, d: Decision, mid: float) -> int:
+        # An invalid probability (non-finite or outside [0, 1]) is never stored, even when
+        # the decision was held as "late", so it cannot reach calibration.
+        p = d.p_up
+        if p is not None and not (math.isfinite(p) and 0.0 <= p <= 1.0):
+            p = None
         cur = self._db.execute(
             "INSERT INTO decisions (ts, p_up, action, reason, size_usd, gate, latency_ms, mid)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (d.ts, d.p_up, d.action.value, d.reason, d.size_usd, d.gate, d.latency_ms, mid),
+            (d.ts, p, d.action.value, d.reason, d.size_usd, d.gate, d.latency_ms, mid),
         )
         self._db.commit()
         return int(cur.lastrowid)
