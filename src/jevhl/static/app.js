@@ -80,7 +80,7 @@
     ]);
     renderChips(sm);
     renderBrier(sm.calibration);
-    drawReliability(sm.calibration[0]);
+    sm.calibration.forEach(drawReliability);
   }
 
   function renderBrier(cal) {
@@ -184,7 +184,7 @@
   }
 
   function drawReliability(c) {
-    var o = ctxOf("rel-chart"), g = o.g;
+    var o = ctxOf("rel-chart-" + c.horizon_s), g = o.g;
     var pad = 36, size = o.w - pad - 10;
     var X = function (p) { return pad + p * size; }, Y = function (p) { return 10 + (1 - p) * size; };
     g.strokeStyle = COLORS.grid; g.fillStyle = COLORS.text; g.font = "11px sans-serif"; g.lineWidth = 1;
@@ -208,7 +208,7 @@
     pts.forEach(function (b) {
       g.beginPath(); g.arc(X(b.mean_p), Y(b.freq), 3 + 5 * Math.sqrt(b.count / maxN), 0, 2 * Math.PI); g.fill();
     });
-    $("rel-note").textContent = "n = " + c.n + " scored decisions; dot size = samples in the bin. "
+    $("rel-note-" + c.horizon_s).textContent = "n = " + c.n + " scored decisions; dot size = samples in the bin. "
       + "Below the dashed line means the model is overconfident in up.";
   }
 

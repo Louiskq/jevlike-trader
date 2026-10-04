@@ -41,10 +41,25 @@
     </table>
     <p class="muted small">Baseline predicts the mean of earlier labels. Lower is better. Longer horizons overlap more, so their samples are less independent. 60 s is the headline.</p>
   </section>
-  <section class="card">
-    <h2>Reliability, 60 s</h2>
-    <canvas id="rel-chart" width="360" height="360"></canvas>
-    <p class="muted small" id="rel-note"></p>
+  <section class="card wide">
+    <h2>Reliability curves (60 s is the headline)</h2>
+    <div class="rel-row">
+    <figure>
+      <h3>60 s (headline)</h3>
+      <canvas id="rel-chart-60" width="360" height="360"></canvas>
+      <p class="muted small" id="rel-note-60"></p>
+    </figure>
+    <figure>
+      <h3>30 s</h3>
+      <canvas id="rel-chart-30" width="360" height="360"></canvas>
+      <p class="muted small" id="rel-note-30"></p>
+    </figure>
+    <figure>
+      <h3>300 s</h3>
+      <canvas id="rel-chart-300" width="360" height="360"></canvas>
+      <p class="muted small" id="rel-note-300"></p>
+    </figure>
+    </div>
   </section>
   <section class="card">
     <h2>Recent fills</h2>
