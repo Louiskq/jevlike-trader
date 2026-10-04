@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import time
 
 import pytest
@@ -25,10 +26,10 @@ class Clock:
         return self.t
 
 
-def mkbook(mid=65000.5, recv_ts=T0):
+def mkbook(mid=65000.5, recv_ts=T0, ts=None):
     bid, ask = mid - 0.5, mid + 0.5
     return Book(
-        ts=recv_ts,
+        ts=recv_ts if ts is None else ts,
         recv_ts=recv_ts,
         coin="BTC",
         bids=[[bid - i, 5.0] for i in range(10)],
@@ -145,7 +146,8 @@ def test_model_exception_is_invalid_hold_and_logged():
 def test_stale_book_is_a_hold_and_model_is_not_called():
     model = StubModel()
     tr, store, clock, _ = make(model=model)
-    run(tr.on_book(mkbook(recv_ts=clock.t - 15.01)))  # older than 15 s when handled
+    # older than 15 s when handled; exchange ts is newer, so judging on ts would call it fresh
+    run(tr.on_book(mkbook(recv_ts=clock.t - 15.01, ts=clock.t - 5.0)))
     (r,) = store.decisions()
     assert (r["action"], r["reason"]) == ("hold", "stale") and r["p_up"] is None
     assert model.calls == 0 and store.fills() == []
@@ -153,13 +155,14 @@ def test_stale_book_is_a_hold_and_model_is_not_called():
 
 def test_book_just_inside_staleness_bound_is_decided():
     tr, store, clock, model = make()
-    run(tr.on_book(mkbook(recv_ts=clock.t - 14.99)))
+    # exchange ts is old: staleness is judged on our receive time, not on ts
+    run(tr.on_book(mkbook(recv_ts=clock.t - 14.99, ts=clock.t - 60.0)))
     assert model.calls == 1 and reasons(store) == [("buy", "signal")]
 
 
 def test_book_exactly_at_staleness_bound_is_still_fresh():
     tr, store, clock, model = make()
-    run(tr.on_book(mkbook(recv_ts=clock.t - 15.0)))  # bound is "older than 15 s"
+    run(tr.on_book(mkbook(recv_ts=clock.t - 15.0, ts=clock.t - 60.0)))  # bound is "older than 15 s"
     assert model.calls == 1
 
 
@@ -428,3 +431,40 @@ def test_run_returns_promptly_after_watchdog_trips_while_feed_is_down():
 
     run(scenario())
     assert tr.stopped and abs(tr.ledger.position) < 1e-9
+
+
+# ---- gaps found by break-it ----
+
+
+def test_partial_exit_is_retried_at_the_next_book():
+    model = StubModel(p=0.9)
+    tr, store, clock, _ = make(model=model)
+    run(tr.on_book(mkbook()))
+    pos = tr.ledger.position
+    model.p = 0.5
+    thin = dataclasses.replace(mkbook(recv_ts=T0 + 60.5), bids=[[64999.5, 0.003]])  # thin
+    clock.t = T0 + 60.5
+    run(tr.on_book(thin))
+    assert tr.ledger.position == pytest.approx(pos - 0.003, abs=1e-9)  # partial exit
+    clock.t = T0 + 66
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert abs(tr.ledger.position) < 1e-9  # the rest was retried
+
+
+def test_order_error_counter_resets_after_a_successful_order():
+    model = StubModel(p=0.9)
+    tr, store, clock, _ = make(model=model)  # max_order_errors = 3
+    outcomes = iter(["err", "err", "ok", "err", "err"])
+
+    def flaky_open(book, side, usd, ts):
+        if next(outcomes) == "err":
+            raise RuntimeError("rejected")
+        return []  # accepted, nothing filled
+
+    tr._paper.open = flaky_open
+    for i in range(5):
+        clock.t = T0 + 5.3 * i
+        run(tr.on_book(mkbook(recv_ts=clock.t)))
+    # err err ok err err: never three in a row, so no trip
+    assert not tr.stopped
+    assert [e["kind"] for e in store.events()].count("order_error") == 4

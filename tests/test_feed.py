@@ -197,7 +197,7 @@ def test_stream_reconnects_and_resubscribes_after_drop():
     assert len(books) == 2
     assert ws2.sent[0]["method"] == "subscribe"  # resubscribed on the new connection
     assert events.count("disconnect") == 2  # refused connect, then dropped stream
-    assert len(sleeps) == 2 and sleeps[1] >= sleeps[0]  # backoff does not shrink
+    assert sleeps == [1.0, 1.0]  # a received book reset the backoff before the drop
 
 
 def test_stream_pings_when_idle():
@@ -211,3 +211,19 @@ def test_stream_pings_when_idle():
     )
     assert len(books) == 1
     assert {"method": "ping"} in ws.sent
+
+
+def test_stream_backoff_doubles_on_failures_and_resets_after_a_book():
+    ws1 = FakeWS([json.dumps(L2), ConnectionError("boom")])
+    ws2 = FakeWS([json.dumps(SESSION[3])])
+    sleeps = []
+
+    async def sleep(s):
+        sleeps.append(s)
+
+    conn = make_connect([OSError("a"), OSError("b"), ws1, OSError("c"), ws2])
+    books = run(take(stream_books("BTC", lambda: 1.0, connect=conn, sleep=sleep), 2))
+    assert len(books) == 2
+    # two refusals double the wait; the book resets it; then the drop waits 1 and the next
+    # refusal waits 2
+    assert sleeps == [1.0, 2.0, 1.0, 2.0]
