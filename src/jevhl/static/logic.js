@@ -60,7 +60,7 @@
         source = null;
       }
       connected = false;
-      if (closed || timer !== null) return;
+      if (closed) return;
       deps.onStatus("reconnecting");
       timer = deps.setTimer(function () { timer = null; connect(); }, backoffMs(attempt));
       attempt += 1;
