@@ -111,3 +111,48 @@ def test_out_of_range_p_rejected(bad):
         reliability_bins([bad], [0])
     with pytest.raises(ValueError):
         brier([bad], [0])
+
+
+def _store_with_outcomes():
+    from jevhl.store import Store
+    from jevhl.types import Action, Decision
+
+    s = Store(":memory:")
+    for ts, p, m30, m60, m300 in [
+        (1, 0.9, 101, 101, 99),
+        (2, 0.2, 99, 99, 101),
+        (3, 0.7, 100, 101, 101),  # tie at 30 s
+    ]:
+        i = s.insert_decision(Decision(ts, p, Action.HOLD, "below_gate", 0, 0.6, 1.0), mid=100)
+        s.resolve(i, 30, m30)
+        s.resolve(i, 60, m60)
+        s.resolve(i, 300, m300)
+    return s
+
+
+def test_horizon_report_uses_that_horizons_labels():
+    from jevhl.calibration import horizon_report
+
+    s = _store_with_outcomes()
+    r60 = horizon_report(s, 60)
+    assert r60["horizon_s"] == 60 and r60["n"] == 3
+    assert r60["brier"] == pytest.approx((0.01 + 0.04 + 0.09) / 3)
+    r300 = horizon_report(s, 300)
+    assert r300["n"] == 3
+    assert r300["brier"] == pytest.approx((0.81 + 0.64 + 0.09) / 3)  # labels flipped
+    r30 = horizon_report(s, 30)
+    assert r30["n"] == 2  # the tie is dropped at 30 s only
+    assert sum(b.count for b in r30["bins"]) == 2
+
+
+def test_horizon_report_unknown_horizon_rejected():
+    from jevhl.calibration import horizon_report
+
+    with pytest.raises(ValueError):
+        horizon_report(_store_with_outcomes(), 45)
+
+
+def test_all_horizon_reports_in_order():
+    from jevhl.calibration import all_horizon_reports
+
+    assert [r["horizon_s"] for r in all_horizon_reports(_store_with_outcomes())] == [30, 60, 300]

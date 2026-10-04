@@ -1,0 +1,67 @@
+{
+ "commit_id": "67546084c3bc26daf7abacf46f2e1e602954c9d8",
+ "event": "COMMENT",
+ "body": "Review trail for M2: reviewer findings R1-R6, break-it gaps B1-B4, and one bug found by the builder during investigation. No user catches at this gate. B2/B3/B4 tests are in tests/test_feed.py and tests/test_trader.py (859e87f).",
+ "comments": [
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 157,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): a kill switch that tripped while the model was thinking did not stop that decision from trading (R1). Now held as `killed`. Fixed in f341991."
+  },
+  {
+   "path": "src/jevhl/ledger.py",
+   "line": 14,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): float residue (e.g. 4.3e-19) left after closing several entries made the bot think it was still long and blocked every sell signal (R2). Position now snaps to exactly 0 below this. Fixed in 2fd8b9f."
+  },
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 183,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): the same residue reached the policy as a real position (R2). Anything under half a lot is now treated as flat. Fixed in 2fd8b9f."
+  },
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 238,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): after the stale watchdog tripped with the feed down, run() waited for a next book that never came and hung (R3). It now races the next book against the stop event. Fixed in d42e440."
+  },
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 166,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): a timed-out model thread kept running and every snapshot started another predict call (R4). Later snapshots now hold until the running call finishes. Fixed in 243845b."
+  },
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 216,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): a mid-decision trip logged two kill_switch events (R5). Fixed in 6754608."
+  },
+  {
+   "path": "src/jevhl/paper.py",
+   "line": 54,
+   "side": "RIGHT",
+   "body": "Caught (builder, while investigating): the float position 0.00015999... was floored to 0.00015, so a reduce-only close left one lot open with no exit scheduled. Position is now snapped to the nearest lot first. Fixed in a48d328."
+  },
+  {
+   "path": "src/jevhl/trader.py",
+   "line": 120,
+   "side": "RIGHT",
+   "body": "Caught (reviewer, break-it): deleting the partial-exit retry passed all 240 tests. Now guarded by test_partial_exit_is_retried_at_the_next_book. Fixed in 859e87f."
+  },
+  {
+   "path": "tests/test_feed.py",
+   "line": 216,
+   "side": "RIGHT",
+   "body": "Caught (reviewer, break-it): feed backoff never resetting or never doubling passed all tests. Now guarded by this test. Fixed in 859e87f."
+  },
+  {
+   "path": ".gitignore",
+   "line": 28,
+   "side": "RIGHT",
+   "body": "Caught (reviewer): SQLite WAL/SHM files could hold decision data and be picked up by `git add .` (R6). Fixed in 6754608."
+  }
+ ]
+}

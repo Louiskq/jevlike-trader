@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import isfinite
 
+from .types import HORIZONS_S
+
 
 def label(mid_t: float, mid_future: float) -> int | None:
     """1 if the mid rose, 0 if it fell, None on a tie (ties are dropped)."""
@@ -91,3 +93,22 @@ def summary(ps: Sequence[float], ys: Sequence[int]) -> dict:
         "baseline_running": baseline_brier_running(ys),
         "baseline_insample": baseline_brier_insample(ys),
     }
+
+
+def horizon_report(store, horizon_s: int, n_bins: int = 10) -> dict:
+    """summary() plus reliability bins for one horizon, read from the store's outcomes.
+    Overlap caveat: see HORIZONS_S."""
+    if horizon_s not in HORIZONS_S:
+        raise ValueError(f"horizon must be one of {HORIZONS_S}, got {horizon_s!r}")
+    scored = store.scored(horizon_s)
+    ps = [p for p, _ in scored]
+    ys = [y for _, y in scored]
+    return {
+        "horizon_s": horizon_s,
+        **summary(ps, ys),
+        "bins": reliability_bins(ps, ys, n_bins),
+    }
+
+
+def all_horizon_reports(store) -> list[dict]:
+    return [horizon_report(store, h) for h in HORIZONS_S]

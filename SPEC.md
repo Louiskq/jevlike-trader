@@ -9,13 +9,13 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 | Stack | Python (SDK: `hyperliquid-python-sdk`, 0.24.0, maintained) |
 | Venue / market | Hyperliquid testnet by default, BTC perp (`COIN` configurable, BTC default) |
 | Cadence | One decision per fresh `l2Book` snapshot (~5.3 s apart, measured: `.pipeline/hl-update-rate.md`) |
-| Horizon | 60 s |
+| Horizon | 60 s for trading, the gate and exits. Outcomes are also recorded at 30 s and 300 s (measurement only) |
 | Model output | `p_up` only: P(mid at t+60 s > mid at t) |
 | Action | buy if `p_up >= GATE`, sell if `p_up <= 1-GATE`, else hold. `GATE` default 0.60 |
 | Order type | Marketable IOC limit (taker). Exits: reduce-only IOC at horizon |
 | Exit policy | Time exit: each entry is closed 60 s after it filled |
 | Decider deadline | 2 s; late means hold, logged as a late hold |
-| Calibration label | Sign of mid change over 60 s; ties dropped. Every decision is scored, traded or not |
+| Calibration label | Sign of mid change over each horizon (30 s, 60 s, 300 s); ties dropped per horizon. Every decision is scored, traded or not. The headline Brier and reliability curve use 60 s; 30 s and 300 s are shown alongside |
 | Storage | SQLite (stdlib) |
 | Dashboard | FastAPI + SSE + static page, bound to 127.0.0.1 only |
 | Network | Testnet only. There is no mainnet code path: `NETWORK=mainnet` is rejected (user will not trade real money) |
@@ -58,12 +58,12 @@ Goal: tooling, tests and the pure logic, with no network. Scaffold (`uv`, ruff, 
 Acceptance: `uv run pytest` and `ruff check` green in CI. Tests cover rounding, gating and abstention, sizing and caps, each kill-switch trigger, calibration maths, config rejecting mainnet.
 
 ### Milestone 2: Live data and dry run
-Goal: real testnet market data, real mock decisions, simulated fills, no key needed. `feed`, `paper`, `ledger`, `trader` loop, latency logging to SQLite.
+Goal: real testnet market data, real mock decisions, simulated fills, no key needed. `feed`, `paper`, `ledger`, `trader` loop, latency logging to SQLite. Each decision also stores the mid at 30 s, 60 s and 300 s and a label per horizon (`outcomes` table, schema v3); `scored()` and calibration take a horizon argument.
 Acceptance: dry run streams one decision per snapshot with no errors for 30 minutes; late-hold and stale-book behaviour proven in tests with mocked clocks and messages; message-parsing tests use realistic fixtures; latency percentiles computed from its own logs.
 
 ### Milestone 3: Dashboard
 Goal: everything in the dashboard list above, live from the dry run. `server` plus static page.
-Acceptance: dashboard loads from 127.0.0.1 only, streams decisions and fills, shows after-fee and before-fee P&L, reliability curve and Brier vs baseline; reconnects after a dropped stream; history reloads from SQLite after restart.
+Acceptance: dashboard loads from 127.0.0.1 only, streams decisions and fills, shows after-fee and before-fee P&L, reliability curve and Brier vs baseline at 60 s, with 30 s and 300 s alongside; reconnects after a dropped stream; history reloads from SQLite after restart.
 
 ### Milestone 4: Testnet live orders
 Goal: real testnet orders with the mock at minimum size. `exchange` wrapper (place IOC, reduce-only close, cancel-all, flatten, fills and fees), `ledger` driven by confirmations, kill switch wired to flatten. User creates testnet account and API wallet themselves (guided).
