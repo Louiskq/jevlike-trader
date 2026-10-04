@@ -4,16 +4,16 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 2 (Normal mode, branch feat/m2-live-dry-run)
-- Next action: merge gate for PR #8
-- Waiting on: merge gate (PR #8)
+- Current milestone: 3 (Normal mode, branch feat/m3-dashboard)
+- Next action: reviewer + break-it on M3 (PR draft open)
+- Waiting on: nothing
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
 |---|---|---|---|---|
 | 1 | Foundations and offline core | #1 | PR #6 + follow-up PR #7 | merged, v0.1 |
-| 2 | Live data and dry run | #2 | feat/m2-live-dry-run, PR #8 (draft) | built, in review |
-| 3 | Dashboard | #3 | | todo |
+| 2 | Live data and dry run | #2 | PR #8 | merged, v0.2 |
+| 3 | Dashboard | #3 | feat/m3-dashboard, draft PR | built, in review |
 | 4 | Testnet live orders | #4 | | todo |
 | 5 | Decider backend and soak | #5 | | todo |
 
@@ -70,3 +70,10 @@
 - 2026-10-04: review gate done (user: 'seems good to me', no catches); inline review posted (10 comments); decisions gate: all 4 kept, user rationale 'no reason'; DECISIONS.md and PR description drafted.
 - 2026-10-04: PR description approved and applied.
 - 2026-10-04: 30-min dry run done (340 decisions, 0 late, 2 clean server-side reconnects, kill none); result added to PR body, .pipeline/dryrun/m2-30min.txt.
+- 2026-10-04: PR #8 merged (085432e); main verified (249 tests); v0.2 released; M2 done.
+- 2026-10-04: M3 mode = Normal; branch feat/m3-dashboard; builder launched.
+- 2026-10-04: M3 built (3 commits, 298 tests, live smoke ok); pushed, draft PR opened. Builder returned no summary file.
+- 2026-10-04: M3 reviewer done (.pipeline/m3-review.md): 1 must-fix (R1 loop blocking), 3 nits (R2-R4), B1-B5 uncaught. At review gate.
+- 2026-10-04: M3 fixes R1-R4 + B1-B5 tests done (6 commits, 309 tests, verified by orchestrator, pushed). Builder note: R1 builds per client in a thread (no shared cache). User accepted node as test-only dep; R2-R4 fix chosen. Next: inline review, decisions gate.
+- 2026-10-04: user: 'no reason' for decisions (node accepted, 3 curves, fix R3/R4). DECISIONS.md, m3-inline.json, m3-pr-description.md drafted. At PR-description approval gate.
+- 2026-10-04: PR description approved and applied; inline review posted (5 comments). Records commit next.

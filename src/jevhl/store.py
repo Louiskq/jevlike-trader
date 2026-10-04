@@ -119,6 +119,26 @@ class Store:
     def decisions(self) -> list[sqlite3.Row]:
         return self._db.execute("SELECT * FROM decisions ORDER BY ts, id").fetchall()
 
+    def recent_decisions(self, n: int) -> list[sqlite3.Row]:
+        """The last n decisions, oldest first."""
+        rows = self._db.execute(
+            "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (n,)
+        ).fetchall()
+        return rows[::-1]
+
+    def decisions_after(self, decision_id: int, limit: int = 500) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM decisions WHERE id > ? ORDER BY id LIMIT ?", (decision_id, limit)
+        ).fetchall()
+
+    def decision_counts(self) -> dict[str, int]:
+        row = self._db.execute(
+            "SELECT COUNT(*) AS total,"
+            " COALESCE(SUM(action = 'hold'), 0) AS holds,"
+            " COALESCE(SUM(reason = 'late'), 0) AS late FROM decisions"
+        ).fetchone()
+        return {"total": row["total"], "holds": row["holds"], "late": row["late"]}
+
     def pending(self, horizon_s: int, lo_ts: float, hi_ts: float) -> list[sqlite3.Row]:
         """Decisions with ts in [lo_ts, hi_ts] that have no outcome yet at this horizon. The
         lower bound stops a long-ago decision being resolved with a much later mid."""
@@ -185,6 +205,16 @@ class Store:
     def fills_before(self, ts: float) -> list[sqlite3.Row]:
         return self._db.execute(
             "SELECT * FROM fills WHERE ts < ? ORDER BY ts, id", (ts,)
+        ).fetchall()
+
+    def recent_fills(self, n: int) -> list[sqlite3.Row]:
+        """The last n fills, oldest first."""
+        rows = self._db.execute("SELECT * FROM fills ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return rows[::-1]
+
+    def fills_after(self, fill_id: int, limit: int = 500) -> list[sqlite3.Row]:
+        return self._db.execute(
+            "SELECT * FROM fills WHERE id > ? ORDER BY id LIMIT ?", (fill_id, limit)
         ).fetchall()
 
     def min_tid(self) -> int:

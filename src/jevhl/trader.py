@@ -78,6 +78,14 @@ class Trader:
         else:
             self._stop.clear()
 
+    @property
+    def last_book(self) -> Book | None:
+        return self._last_book
+
+    @property
+    def kill_reason(self) -> str | None:
+        return self._kill.reason
+
     # ---- per snapshot ----
 
     async def on_book(self, book: Book) -> None:

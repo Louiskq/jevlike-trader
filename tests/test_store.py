@@ -221,3 +221,23 @@ def test_old_schema_version_refused(tmp_path):
     db.close()
     with pytest.raises(RuntimeError, match="schema"):
         Store(path)
+
+
+def test_recent_and_after_decisions_and_fills(store):
+    ids = [store.insert_decision(dec(ts=float(i)), mid=100.0 + i) for i in range(1, 6)]
+    assert [r["id"] for r in store.recent_decisions(3)] == ids[2:]  # oldest first
+    assert [r["id"] for r in store.decisions_after(ids[1])] == ids[2:]
+    assert [r["id"] for r in store.decisions_after(ids[1], limit=2)] == ids[2:4]
+    assert store.decisions_after(ids[-1]) == []
+    for t in range(1, 5):
+        store.insert_fill(tid=t, oid=t, ts=float(t), coin="BTC", side="buy", sz=1, px=1, fee=0)
+    assert [r["tid"] for r in store.recent_fills(2)] == [3, 4]
+    after = store.fills()[1]["id"]
+    assert [r["tid"] for r in store.fills_after(after)] == [3, 4]
+
+
+def test_decision_counts(store):
+    store.insert_decision(dec(ts=1), mid=1.0)
+    store.insert_decision(dec(ts=2, p=0.5, action=Action.HOLD, reason="below_gate"), mid=1.0)
+    store.insert_decision(dec(ts=3, p=None, action=Action.HOLD, reason="late"), mid=1.0)
+    assert store.decision_counts() == {"total": 3, "holds": 2, "late": 1}
