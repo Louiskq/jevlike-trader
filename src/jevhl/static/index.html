@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>jevhl dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>jevhl <span class="muted">testnet dry run</span></h1>
+  <div id="chips">
+    <span class="chip" id="chip-stream">stream: connecting</span>
+    <span class="chip" id="chip-feed">feed: ?</span>
+    <span class="chip" id="chip-kill">kill switch: ?</span>
+  </div>
+</header>
+<main>
+  <section class="card wide">
+    <h2>Mid price, decisions and fills</h2>
+    <canvas id="mid-chart" width="900" height="260"></canvas>
+    <p class="muted small">Line: mid at each decision. Triangles: buy / sell decisions. Circles: fills.</p>
+  </section>
+  <section class="card">
+    <h2>Current decision</h2>
+    <dl id="decision"></dl>
+  </section>
+  <section class="card">
+    <h2>Position and P&amp;L</h2>
+    <dl id="pnl"></dl>
+  </section>
+  <section class="card">
+    <h2>Counts</h2>
+    <dl id="counts"></dl>
+  </section>
+  <section class="card wide">
+    <h2>Brier vs baseline</h2>
+    <table id="brier">
+      <thead><tr><th>Horizon</th><th>Samples (n)</th><th>Brier</th><th>Baseline (running)</th><th>Verdict</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="muted small">Baseline predicts the mean of earlier labels. Lower is better. Longer horizons overlap more, so their samples are less independent. 60 s is the headline.</p>
+  </section>
+  <section class="card">
+    <h2>Reliability, 60 s</h2>
+    <canvas id="rel-chart" width="360" height="360"></canvas>
+    <p class="muted small" id="rel-note"></p>
+  </section>
+  <section class="card">
+    <h2>Recent fills</h2>
+    <table id="fills"><thead><tr><th>Time</th><th>Side</th><th>Size</th><th>Price</th><th>Fee</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card wide">
+    <h2>Recent decisions</h2>
+    <table id="decisions"><thead><tr><th>Time</th><th>Action</th><th>p_up</th><th>Reason</th><th>Size $</th><th>Latency ms</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script src="/static/logic.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
