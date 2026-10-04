@@ -4,15 +4,15 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 2 (not started)
-- Next action: M2 kickoff: spec-change commit (multi-horizon) first, then mode gate
-- Waiting on: nothing (user to /clear then /pipeline)
+- Current milestone: 2 (Normal mode, branch feat/m2-live-dry-run)
+- Next action: ready PR #8, CI, merge gate (30-min dry run decision pending)
+- Waiting on: user decision on 30-min dry run; then merge gate
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
 |---|---|---|---|---|
 | 1 | Foundations and offline core | #1 | PR #6 + follow-up PR #7 | merged, v0.1 |
-| 2 | Live data and dry run | #2 | | todo |
+| 2 | Live data and dry run | #2 | feat/m2-live-dry-run, PR #8 (draft) | built, in review |
 | 3 | Dashboard | #3 | | todo |
 | 4 | Testnet live orders | #4 | | todo |
 | 5 | Decider backend and soak | #5 | | todo |
@@ -26,6 +26,12 @@
   - Store: replace single mid_future/label columns with an `outcomes(decision_id, horizon_s, mid_future, label)` table (schema v3, no data to migrate yet); `scored()` and calibration take a horizon argument.
   - Brief the builder in plan mode; note overlap caveat (longer horizons overlap more) for the README.
 - M2: build KillSwitch with day_start_pnl computed from the store (cumulative realized+unrealized-fees at 00:00 UTC); insert_fill needs exchange tid; insert_decision nulls out-of-range p_up.
+- Patterns from M2 review (check these in every later build):
+  - After any await, re-check stop/kill state before acting on the result; shared state can change while a call is in flight.
+  - Compare float positions against a lot-size epsilon, never against 0; snap residue to exactly flat and round to the nearest lot before flooring.
+  - A stop signal must wake a loop that is waiting on I/O, not only one that is receiving data.
+  - A timed-out worker thread keeps running: track it and block new calls until it finishes.
+  - Every retry, reset and backoff branch needs a test that fails when the branch is deleted.
 - Patterns from M1 review (check these in every later build):
   - Parse numeric input with isfinite checks; NaN passes every comparison silently (guards, limits, deadlines).
   - Never let an out-of-range model output reach storage or scoring.
@@ -55,3 +61,11 @@
 - 2026-10-04: follow-up PR #7 opened, ready, CI checked.
 - 2026-10-04: user approved multi-horizon labelling (30/60/300 s) for M2; recorded in notes, spec edit to be first commit on M2 branch.
 - 2026-10-04: PR #7 merged (0164fad); main verified (137 tests); v0.1 released; M1 done.
+- 2026-10-04: orchestrator pushed 9995d6d (M1 records) directly to main by mistake; disclosed to user, not reverted.
+- 2026-10-04: M2 mode = Normal; branch feat/m2-live-dry-run; spec-change commit 6a52082 (multi-horizon); builder launched.
+- 2026-10-04: M2 built (4 commits, 240 tests); verified by orchestrator (tests, ruff check, 40 s live smoke). Pushed, draft PR opened.
+- 2026-10-04: M2 reviewer + break-it done (.pipeline/m2-review.md, m2-breakit.md): 3 must-fix (R1-R3), 3 nits (R4-R6), B1-B4 uncaught.
+- 2026-10-04: R1 f341991, R2 2fd8b9f, R3 d42e440, B1-B4 tests 859e87f (all mutants now caught); 247 tests; pushed. At review gate. Builder flagged an unexplained 1e-5 (one-lot) leftover position case (entries p=0.65 then 0.6, both exited).
+- 2026-10-04: user chose to fix R4-R6 and investigate residue. R4 243845b; residue was a real bug (paper close floored 0.00015999.. to 0.00015) fixed a48d328; R5+R6 6754608. 249 tests; pushed. Still at review gate (user has not yet said done).
+- 2026-10-04: review gate done (user: 'seems good to me', no catches); inline review posted (10 comments); decisions gate: all 4 kept, user rationale 'no reason'; DECISIONS.md and PR description drafted.
+- 2026-10-04: PR description approved and applied.

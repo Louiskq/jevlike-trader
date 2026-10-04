@@ -46,3 +46,28 @@ Mainnet; withdrawals/transfers; multi-market; maker strategy; public dashboard; 
 ## M2: spec change (multi-horizon labelling)
 
 - **Record outcomes at 30 s, 60 s and 300 s for every decision.** Trading, the gate and exits stay at 60 s; the dashboard headline Brier and reliability curve are 60 s, with 30 s and 300 s alongside. Alternative: 60 s only. Rationale (user): "yes do this". Caveat for the README: longer horizons overlap more, so their samples are less independent.
+
+## M2 / PR #8: decisions
+
+The user kept all four choices and gave no rationale ("no reason").
+
+- **A feed outage over 15 s trips the stale-book kill switch and stops the bot.** Chosen: keep (alternative: hold and keep reconnecting). Rationale (user): none given.
+- **An outcome at 30/60/300 s is recorded only if a book arrives within 15 s of the mark; otherwise the decision stays unscored.** Chosen: keep (alternative: use the first later book however late). Rationale (user): none given.
+- **A position left over at startup is rebuilt from the store and closed at the first book.** Chosen: keep (alternative: restore the original 60 s timers). Rationale (user): none given.
+- **Paper fills use a 4.5 bps taker fee and a 50 bps price band; reduce-only exits skip the $10 minimum.** Chosen: keep until M4 verifies them on testnet (alternative: different numbers or rules). Rationale (user): none given.
+
+## M2 / PR #8: caught mistakes
+
+> **M2 / PR #8: trade after the kill switch tripped mid-decision.** Caught by: reviewer. What: a model call in flight when the kill switch tripped still returned and bought. Why it was wrong: an extra round trip with fees after the stop (from M4 a real order after a kill). Fix: f341991. Prevention: `test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed`.
+
+> **M2 / PR #8: float residue blocked one side.** Caught by: reviewer. What: closing two same-side entries left a position of about 4e-19, which the policy read as long. Why it was wrong: every sell signal became hold/blocked, silently. Fix: 2fd8b9f. Prevention: `test_float_residue_after_closing_two_entries_does_not_block_opposite_signal`, `test_float_residue_snaps_to_exactly_flat`.
+
+> **M2 / PR #8: run() hung after the stale watchdog tripped.** Caught by: reviewer. What: with the feed down, run() waited for a book that never came. Why it was wrong: the spec says stale book means flatten and stop. Fix: d42e440. Prevention: `test_run_returns_promptly_after_watchdog_trips_while_feed_is_down`.
+
+> **M2 / PR #8: hung model got a new call every snapshot.** Caught by: reviewer. What: a timed-out model thread kept running while each snapshot started another. Why it was wrong: it broke "one decision in flight". Fix: 243845b. Prevention: `test_hung_model_thread_gets_no_second_predict_until_it_finishes`.
+
+> **M2 / PR #8: a close left one lot open.** Caught by: builder (investigation). What: the float position 0.00015999... was floored to 0.00015 on a reduce-only close. Why it was wrong: one lot stayed open with no exit scheduled. Fix: a48d328. Prevention: `test_exit_closes_the_whole_lot_despite_float_error_in_position`.
+
+> **M2 / PR #8: double kill-switch event, WAL files not ignored.** Caught by: reviewer. What: a mid-decision trip logged two events; SQLite WAL/SHM files were not gitignored. Fix: 6754608. Prevention: exactly-one assertion in the R1 test; `.gitignore` patterns.
+
+> **M2 / PR #8: four deliberate bugs passed every test.** Caught by: reviewer (break-it). What: partial-exit retry removed, feed backoff never reset, order-error counter never reset, staleness judged on exchange time. Fix: 859e87f (tests only). Prevention: `test_partial_exit_is_retried_at_the_next_book`, `test_stream_backoff_doubles_on_failures_and_resets_after_a_book`, `test_order_error_counter_resets_after_a_successful_order`, and the three stale-book tests now using ts != recv_ts.
