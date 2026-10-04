@@ -72,6 +72,13 @@ def test_open_sell_goes_through_the_bid():
     assert orders(fake)[0][2] is False and f["side"] == "sell" and f["px"] == 64999.0
 
 
+def test_entry_size_is_computed_at_the_limit_price_not_the_touch():
+    ex, fake, _ = make()
+    ex.open(mkbook(), "buy", 100.2, ts=1.0)
+    # 100.2 / 65326 (limit) = 0.001534 -> 0.00153; at the touch (65001) it would be 0.00154
+    assert orders(fake)[0][3] == 0.00153
+
+
 def test_entry_notional_clears_the_minimum_at_the_limit_price_with_a_margin():
     ex, fake, _ = make()
     ex.open(mkbook(), "sell", 10.0, ts=1.0)
@@ -300,11 +307,12 @@ def test_sync_fills_never_goes_backwards():
     ex, fake, _ = make()
     fake.raw_fills = [raw(tid=1, time=fake.now_ms + 500_000)]
     ex.sync_fills()
-    fake.raw_fills = []
+    mark = fake.now_ms + 500_000 - 60_000
+    fake.raw_fills = [raw(tid=2, time=mark + 30_000)]  # newer than the mark, 30 s after it
     ex.sync_fills()
     ex.sync_fills()
     starts = [c[2] for c in fake.calls if c[0] == "user_fills_by_time"]
-    assert starts[1] == starts[2] == fake.now_ms + 500_000 - 60_000
+    assert starts[1] == starts[2] == mark
 
 
 # ---- flatten ----
@@ -316,6 +324,7 @@ def test_flatten_closes_the_exchange_position_not_the_callers_belief():
     ex, _, _ = make(fake)
     fills = ex.flatten(mkbook(), position=0.001, ts=1.0)  # caller thinks 0.001
     assert fake.position == 0.0 and sum(f["sz"] for f in fills) == pytest.approx(0.003)
+    assert len(orders(fake)) == 1  # sized from the exchange's 0.003, in one go
     (_, _, is_buy, _, limit_px, _, reduce_only) = orders(fake)[0]
     assert (is_buy, reduce_only) == (False, True)
     assert limit_px == 64675.0  # mid 65000 * 0.995 rounded down: priced from a fresh mid
@@ -365,6 +374,16 @@ def test_flatten_keeps_going_after_a_partial_fill():
     fills = ex.flatten(mkbook(), 0.003, 1.0)
     assert fake.position == pytest.approx(0.0, abs=1e-9)
     assert len(orders(fake)) == 3 and sum(f["sz"] for f in fills) == pytest.approx(0.003)
+
+
+def test_flatten_returns_the_fills_it_confirmed_even_if_the_rest_was_not():
+    fake = FakeHL(bids=[[64999.0, 0.001], [64998.0, 5.0]])
+    fake.position = 0.002
+    ex, _, _ = make(fake, confirm_tries=1, flatten_tries=1)
+    real = fake.user_fills_by_time
+    fake.user_fills_by_time = lambda *a, **k: real(*a, **k)[:1]  # the 2nd fill is not visible
+    fills = ex.flatten(mkbook(), 0.002, 1.0)
+    assert [f["sz"] for f in fills] == [0.001] and fake.position == pytest.approx(0.0, abs=1e-12)
 
 
 def test_flatten_gives_up_loudly_with_the_fills_it_did_get():

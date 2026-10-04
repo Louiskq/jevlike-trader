@@ -38,7 +38,7 @@ def fetch_meta(coin: str) -> AssetMeta:
 
 async def _watchdog(trader: Trader, every_s: float = 1.0) -> None:
     while not trader.stopped:
-        trader.check_stale()
+        await trader.check_stale()
         await asyncio.sleep(every_s)
 
 

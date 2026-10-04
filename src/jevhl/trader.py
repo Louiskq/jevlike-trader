@@ -2,8 +2,14 @@
 
 Per snapshot: housekeeping (resolve outcomes, run due exits, update P&L and the kill switch),
 then, if no decision is in flight and the book is fresh, ask the model with a hard deadline
-(late means hold) and act on the policy's answer. Fills come from `paper` here; the same flow
-is driven by exchange confirmations from milestone 4.
+(late means hold) and act on the policy's answer.
+
+The executor is either `paper` (simulated, synchronous) or `exchange` (live testnet, blocking
+HTTP run in a worker thread). Live accounting follows exchange confirmations only: each
+executor call runs under one lock (so a halt can never interleave with an order), its
+confirmed fills are stored (idempotent on tid) and booked before the lock is released, and a
+periodic poll books any fill an order call did not return. After every await the stop state is
+checked again before acting on the result.
 """
 
 from __future__ import annotations
@@ -16,12 +22,12 @@ from dataclasses import dataclass
 from .config import Config
 from .feed import Book
 from .ledger import Ledger, day_start_pnl
-from .paper import PaperExchange
 from .policy import decide, hold
 from .risk import KillSwitch
 from .types import HORIZONS_S, Action, Decision, ModelInput
 
 RECENT_MIDS = 20
+POLL_S = 15.0  # live backstop: re-read the exchange's fills this often
 
 
 @dataclass
@@ -43,14 +49,16 @@ class Trader:
         cfg: Config,
         store,
         model,
-        paper: PaperExchange,
+        executor,
         ledger: Ledger,
         kill: KillSwitch,
         clock: Callable[[], float] = time.time,
         perf: Callable[[], float] = time.perf_counter,
     ):
         self.cfg, self.store, self.ledger = cfg, store, ledger
-        self._model, self._paper, self._kill = model, paper, kill
+        self._model, self._executor, self._kill = model, executor, kill
+        self._lock = asyncio.Lock()  # one executor call at a time
+        self._last_poll = 0.0
         self._clock, self._perf = clock, perf
         self._inflight = False
         self._model_task: asyncio.Future | None = None  # the worker thread's call, if running
@@ -59,13 +67,10 @@ class Trader:
         self._exits: list[_Exit] = []
         self._stop = asyncio.Event()
         self.error: BaseException | None = None
-        lot = 10.0 ** -paper.meta.sz_decimals
+        lot = 10.0 ** -executor.meta.sz_decimals
         self._dust = lot / 2
-        if abs(ledger.position) >= self._dust:
-            # Restarted with an open position: its timers are gone, so close it at the
-            # first book rather than leave it open.
-            self._exits.append(_Exit(0.0, "sell" if ledger.position > 0 else "buy",
-                                     abs(ledger.position)))
+        # Restarted with an open position: its timers are gone, so close it at the first book.
+        self._cover_residue()
 
     @property
     def stopped(self) -> bool:
@@ -95,8 +100,9 @@ class Trader:
         self._kill.on_book()
         self._recent = (self._recent + [book.mid])[-RECENT_MIDS:]
         self._resolve_outcomes(book)
-        self._run_exits(book)
-        if self._risk(book):
+        await self._poll_fills()
+        await self._run_exits(book)
+        if self.stopped or await self._risk(book):
             return
         if self._inflight:
             self.store.log_event(self._clock(), "skip", "decision in flight")
@@ -106,7 +112,7 @@ class Trader:
             await self._decide(book)
         finally:
             self._inflight = False
-        self._risk(book)
+        await self._risk(book)
 
     def _resolve_outcomes(self, book: Book) -> None:
         """Outcome mid = the first book at or after decision ts + horizon, but only if it
@@ -116,38 +122,94 @@ class Trader:
             for row in self.store.pending(h, lo, book.recv_ts - h):
                 self.store.resolve(row["id"], h, book.mid)
 
-    def _run_exits(self, book: Book) -> None:
-        keep = []
-        for ex in self._exits:
-            if ex.due_ts > book.recv_ts:
-                keep.append(ex)
-                continue
-            fills = self._paper.close(book, ex.side, ex.sz, self.ledger.position, book.recv_ts)
-            self._apply(fills)
-            left = ex.sz - sum(f["sz"] for f in fills)
-            if left >= self._dust and abs(self.ledger.position) >= self._dust:
-                keep.append(_Exit(ex.due_ts, ex.side, left))  # partial: retry at next book
-        self._exits = keep
+    async def _run(self, fn, *args):
+        """An executor call: in a worker thread if it blocks on the network."""
+        if self._executor.live:
+            return await asyncio.to_thread(fn, *args)
+        return fn(*args)
 
-    def _apply(self, fills: list[dict]) -> None:
+    def _apply(self, fills: list[dict]) -> list[dict]:
+        """Book fills. A live executor leaves storage to us: a fill whose tid is already
+        stored is skipped, so re-reading the same fills can never double-count."""
+        done = []
         for f in fills:
+            if self._executor.live and not self.store.insert_fill(
+                tid=f["tid"], oid=f["oid"], ts=f["ts"], coin=self.cfg.coin, side=f["side"],
+                sz=f["sz"], px=f["px"], fee=f["fee"],
+            ):
+                continue
             self.ledger.apply_fill(f["side"], f["sz"], f["px"], f["fee"])
+            done.append(f)
+        return done
 
-    def _risk(self, book: Book) -> bool:
+    def _order_failed(self, e: Exception, what: str) -> list[dict]:
+        """An executor call raised: count it, log it, and still book the fills it did
+        confirm (an order can partly fill before the error)."""
+        applied = self._apply(getattr(e, "fills", []))
+        self._kill.on_order_result(False)
+        self.store.log_event(self._clock(), "order_error", f"{what}: {type(e).__name__}: {e}")
+        return applied
+
+    def _cover_residue(self) -> None:
+        """Give every part of the position that has no exit timer an immediate exit."""
+        covered = sum(e.sz if e.side == "sell" else -e.sz for e in self._exits)
+        uncovered = self.ledger.position - covered
+        if abs(uncovered) >= self._dust:
+            self._exits.append(_Exit(0.0, "sell" if uncovered > 0 else "buy", abs(uncovered)))
+
+    async def _poll_fills(self) -> None:
+        """Live backstop: book fills no order call returned (a confirmation that timed out, a
+        trade made in the UI)."""
+        if not self._executor.live or self._clock() - self._last_poll < POLL_S:
+            return
+        self._last_poll = self._clock()
+        async with self._lock:
+            if self.stopped:
+                return
+            try:
+                fills = await self._run(self._executor.sync_fills)
+            except Exception as e:
+                self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
+                return
+            if self._apply(fills):
+                self.store.log_event(self._clock(), "fill_backstop", "booked unreturned fills")
+                self._cover_residue()
+
+    async def _run_exits(self, book: Book) -> None:
+        due = [e for e in self._exits if e.due_ts <= book.recv_ts]
+        self._exits = [e for e in self._exits if e.due_ts > book.recv_ts]  # claimed: no double send
+        for ex in due:
+            async with self._lock:
+                if self.stopped:  # halted while waiting: the flatten owns the position now
+                    return
+                try:
+                    fills = await self._run(
+                        self._executor.close, book, ex.side, ex.sz, self.ledger.position,
+                        book.recv_ts,
+                    )
+                    self._kill.on_order_result(True)
+                    applied = self._apply(fills)
+                except Exception as e:
+                    applied = self._order_failed(e, "exit")
+                left = ex.sz - sum(f["sz"] for f in applied)
+                if left >= self._dust and abs(self.ledger.position) >= self._dust:
+                    self._exits.append(_Exit(ex.due_ts, ex.side, left))  # retry at next book
+
+    async def _risk(self, book: Book) -> bool:
         """Update P&L, check the kill switch. Returns True if the bot halted."""
         self._kill.update_pnl(self.ledger.pnl(book.mid))
         if self._kill.tripped:
-            self._halt(self._kill.reason)
+            await self._halt(self._kill.reason)
             return True
         return False
 
-    def check_stale(self) -> str | None:
+    async def check_stale(self) -> str | None:
         """Watchdog, called about once a second: no book for stale_s trips the kill switch."""
         if self.stopped:
             return self._kill.reason
         reason = self._kill.check()
         if reason:
-            self._halt(reason)
+            await self._halt(reason)
         return reason
 
     # ---- decisions ----
@@ -167,7 +229,7 @@ class Trader:
         decision_id = self.store.insert_decision(d, book.mid)
         if d.action is Action.HOLD:
             return
-        self._enter(book, d, decision_id)
+        await self._enter(book, d, decision_id)
 
     async def _ask(self, inp: ModelInput, ts: float) -> Decision:
         cfg = self.cfg
@@ -191,46 +253,65 @@ class Trader:
         position_usd = (0.0 if abs(pos) < self._dust else pos) * inp.mid  # below a lot = flat
         return decide(out.p_up, position_usd, cfg, ts=ts, latency_ms=latency_ms)
 
-    def _enter(self, book: Book, d: Decision, decision_id: int) -> None:
+    async def _enter(self, book: Book, d: Decision, decision_id: int) -> None:
         side = d.action.value
-        try:
-            fills = self._paper.open(book, side, d.size_usd, book.recv_ts)
-        except Exception as e:
-            self._kill.on_order_result(False)
-            self.store.log_event(self._clock(), "order_error", f"{type(e).__name__}: {e}")
-            return
-        self._kill.on_order_result(True)
-        if not fills:
-            self.store.log_event(self._clock(), "no_fill", f"decision {decision_id}")
-            return
-        self._apply(fills)
-        self._exits.append(
-            _Exit(book.recv_ts + self.cfg.horizon_s, "sell" if side == "buy" else "buy",
-                  sum(f["sz"] for f in fills))
-        )
+        async with self._lock:
+            if self.stopped or self._kill.tripped:  # halted while waiting for the exchange
+                self.store.log_event(self._clock(), "order_skipped", f"decision {decision_id}")
+                return
+            try:
+                fills = await self._run(
+                    self._executor.open, book, side, d.size_usd, book.recv_ts
+                )
+                self._kill.on_order_result(True)
+                applied = self._apply(fills)
+            except Exception as e:
+                applied = self._order_failed(e, "entry")
+            if not applied:
+                self.store.log_event(self._clock(), "no_fill", f"decision {decision_id}")
+                return
+            self._exits.append(
+                _Exit(book.recv_ts + self.cfg.horizon_s, "sell" if side == "buy" else "buy",
+                      sum(f["sz"] for f in applied))
+            )
 
     # ---- stopping ----
 
-    def _flatten(self) -> None:
-        book = self._last_book
-        pos = self.ledger.position
-        if book is None or abs(pos) < self._dust:
-            return
-        side = "sell" if pos > 0 else "buy"
-        self._apply(self._paper.close(book, side, abs(pos), pos, self._clock()))
-        self._exits = []
+    async def _flatten(self) -> None:
+        """Cancel and close everything. Live, the exchange's own position is what gets
+        closed (the ledger may be behind it), and its fills are re-read afterwards so a
+        confirmation that timed out is still booked."""
+        async with self._lock:
+            book, pos = self._last_book, self.ledger.position
+            live = self._executor.live
+            if not live and (book is None or abs(pos) < self._dust):
+                return
+            try:
+                fills = await self._run(self._executor.flatten, book, pos, self._clock())
+            except Exception as e:  # keep stopping even if the venue is unreachable
+                fills = getattr(e, "fills", [])
+                self.store.log_event(
+                    self._clock(), "flatten_failed", f"{type(e).__name__}: {e}"
+                )
+            self._apply(fills)
+            if live:
+                try:
+                    self._apply(await self._run(self._executor.sync_fills))
+                except Exception as e:
+                    self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
+            self._exits = []
 
-    def _halt(self, reason: str | None) -> None:
+    async def _halt(self, reason: str | None) -> None:
         if self.stopped:  # already halted (e.g. the watchdog tripped mid-decision)
             return
+        self.stopped = True  # first: nothing new may start, and the run loop wakes
         self.store.log_event(self._clock(), "kill_switch", reason or "")
-        self._flatten()
-        self.stopped = True
+        await self._flatten()
 
     async def shutdown(self) -> None:
-        """Clean shutdown: flatten, stop."""
-        self._flatten()
+        """Clean shutdown: stop (queued orders re-check this), flatten."""
         self.stopped = True
+        await self._flatten()
 
     async def run(self, books: AsyncIterator[Book]) -> None:
         """Consume snapshots until the stream ends or the bot stops. Each snapshot is handled
