@@ -18,7 +18,8 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 | Calibration label | Sign of mid change over 60 s; ties dropped. Every decision is scored, traded or not |
 | Storage | SQLite (stdlib) |
 | Dashboard | FastAPI + SSE + static page, bound to 127.0.0.1 only |
-| Testnet caps | $50 max position, $10 max daily loss (same as mainnet) |
+| Network | Testnet only. There is no mainnet code path: `NETWORK=mainnet` is rejected (user will not trade real money) |
+| Limits | Defaults $500 max position, $100 max daily loss; both configurable via env, no hard ceiling |
 
 **Assumptions I added (not your decisions; check them):**
 - While a position is open, a signal on the opposite side is treated as hold (logged as `blocked`). A same-side signal may add up to the position cap. Each entry keeps its own 60 s exit timer.
@@ -28,7 +29,7 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 
 ## Design proposal
 
-Modules (`src/jevhl/`): `config` (env, mainnet guard) · `rounding` (price and size to exchange rules) · `feed` (WS client, message parsing, staleness) · `model` (interface, `MockModel`, `DeciderModel` over HTTP) · `policy` (gate, abstain, confidence sizing, caps; pure functions) · `risk` (kill switch state machine) · `exchange` (SDK wrapper: place, close, cancel, flatten, fills; fee capture) · `paper` (dry-run fill simulation against the book) · `ledger` (positions, fees, P&L before and after fees, confirmed by exchange fills only) · `store` (SQLite) · `calibration` (labelling, Brier, baseline Brier, reliability bins) · `trader` (the loop: one decision in flight, hold when late) · `server` (FastAPI, SSE, static dashboard).
+Modules (`src/jevhl/`): `config` (env; rejects mainnet) · `rounding` (price and size to exchange rules) · `feed` (WS client, message parsing, staleness) · `model` (interface, `MockModel`, `DeciderModel` over HTTP) · `policy` (gate, abstain, confidence sizing, caps; pure functions) · `risk` (kill switch state machine) · `exchange` (SDK wrapper: place, close, cancel, flatten, fills; fee capture) · `paper` (dry-run fill simulation against the book) · `ledger` (positions, fees, P&L before and after fees, confirmed by exchange fills only) · `store` (SQLite) · `calibration` (labelling, Brier, baseline Brier, reliability bins) · `trader` (the loop: one decision in flight, hold when late) · `server` (FastAPI, SSE, static dashboard).
 
 Loop: new `l2Book` snapshot arrives → if a decision is already in flight or the book is older than the staleness bound, skip (hold) → ask model with a 2 s deadline → policy → fire order, show intent immediately → position and P&L change only on exchange fill confirmation (user-event WS and an `info` poll as a backstop).
 
@@ -38,23 +39,23 @@ Dashboard shows: live mid and markers, current decision (`p_up`, action, gate, s
 
 ## Hard constraints
 
-- Testnet default. Mainnet only with `NETWORK=mainnet` AND typed confirmation at startup; mainnet hard caps $50 position, $10 daily loss, not overridable by env.
+- Testnet only. Config rejects any network other than testnet; no mainnet code, URLs or confirmation flow exist. Position and daily-loss limits default to $500 / $100 and are configurable.
 - API (agent) wallet key only. Key only from `.env`, which is in `.gitignore` before it exists. Never logged, never committed. No withdrawal or transfer code anywhere.
 - Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, stop, show on dashboard. Also flatten on clean shutdown.
 - Signing and orders only through the SDK. Price and size rounded to exchange rules (tick, lot, significant figures), and tested.
 - Well inside rate limits (`.pipeline/hl-facts.md`): one WS, few subscriptions, at most about 2 orders per minute plus light polling.
 - Ask before adding any dependency that needs system packages.
-- Pipeline rule: only the user merges. Mainnet is out of scope for this whole project.
+- Pipeline rule: only the user merges.
 
 ## Tests (pytest, in the first milestone where each unit exists)
 
-Rounding; hold-when-late; abstention and gating; confidence-scaled sizing with caps; kill switch (each trigger); dry-run fill simulation; parsing of realistic Hyperliquid messages (mocked fixtures); decider backend against a mocked server (success and timeout); calibration maths (Brier, baseline, reliability bins, tie dropping); mainnet guard.
+Rounding; hold-when-late; abstention and gating; confidence-scaled sizing with caps; kill switch (each trigger); dry-run fill simulation; parsing of realistic Hyperliquid messages (mocked fixtures); decider backend against a mocked server (success and timeout); calibration maths (Brier, baseline, reliability bins, tie dropping); config rejects mainnet.
 
 ## Milestones
 
 ### Milestone 1: Foundations and offline core
-Goal: tooling, tests and the pure logic, with no network. Scaffold (`uv`, ruff, pytest, CI), `config` with mainnet guard, `rounding`, `policy`, `risk`, `store`, `calibration`, `MockModel`.
-Acceptance: `uv run pytest` and `ruff check` green in CI. Tests cover rounding, gating and abstention, sizing and caps, each kill-switch trigger, calibration maths, mainnet guard.
+Goal: tooling, tests and the pure logic, with no network. Scaffold (`uv`, ruff, pytest, CI), `config` (rejects mainnet), `rounding`, `policy`, `risk`, `store`, `calibration`, `MockModel`.
+Acceptance: `uv run pytest` and `ruff check` green in CI. Tests cover rounding, gating and abstention, sizing and caps, each kill-switch trigger, calibration maths, config rejecting mainnet.
 
 ### Milestone 2: Live data and dry run
 Goal: real testnet market data, real mock decisions, simulated fills, no key needed. `feed`, `paper`, `ledger`, `trader` loop, latency logging to SQLite.
@@ -70,10 +71,10 @@ Acceptance: an hour of live testnet trading; fills, position, fees and P&L match
 
 ### Milestone 5: Decider backend and soak
 Goal: `MODEL=decider` over HTTP against `DECIDER_URL`; contract confirmed with the user then. Overnight unattended run.
-Acceptance: backend tested against a mocked server (success and timeout); overnight run with no crash and no growing memory; hold rate not stuck at 0% or 100%. Stop here: mainnet is the user's decision.
+Acceptance: backend tested against a mocked server (success and timeout); overnight run with no crash and no growing memory; hold rate not stuck at 0% or 100%. Stop here.
 
 (Evidence and README follow as pipeline steps 6 and 7: latency table from the bot's own logs, the calibration result, and an honest note that a short-horizon bot is expected to lose its fees unless the model has real edge.)
 
 ## Out of scope
 
-Mainnet use; withdrawals or transfers; multiple markets at once; post-only/maker strategy; public deployment of the dashboard; backtesting; training the decider.
+Mainnet (any use); withdrawals or transfers; multiple markets at once; post-only/maker strategy; public deployment of the dashboard; backtesting; training the decider.
