@@ -367,3 +367,25 @@ def test_run_consumes_books_one_decision_each_and_flattens_at_end():
     run(tr.run(books()))
     assert len(store.decisions()) == 3
     assert abs(tr.ledger.position) < 1e-9  # clean shutdown flattened
+
+
+# ---- kill switch during a decision ----
+
+
+def test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed():
+    tr, store, clock, model = make(model=StubModel(p=0.9), perf=time.perf_counter)
+    run(tr.on_book(mkbook()))  # long
+    assert tr.ledger.position > 0
+    model.real_sleep = 0.2
+
+    async def scenario():
+        t = asyncio.create_task(tr.on_book(mkbook(recv_ts=clock.t + 1)))
+        await asyncio.sleep(0.05)  # model call is in flight
+        clock.t += 20
+        assert tr.check_stale() == "stale_book"  # watchdog flattens and stops
+        await t
+
+    run(scenario())
+    assert [f["side"] for f in store.fills()] == ["buy", "sell"]  # no fresh entry
+    assert reasons(store)[-1] == ("hold", "killed")
+    assert abs(tr.ledger.position) < 1e-9

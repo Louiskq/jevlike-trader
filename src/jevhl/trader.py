@@ -142,6 +142,8 @@ class Trader:
         inp = ModelInput(ts, book.coin, book.mid, book.spread_bps,
                          book.bids, book.asks, list(self._recent), cfg.horizon_s)
         d = await self._ask(inp, ts)
+        if self.stopped or self._kill.tripped:  # tripped while the model was thinking
+            d = hold("killed", ts=ts, gate=cfg.gate, p_up=d.p_up, latency_ms=d.latency_ms)
         decision_id = self.store.insert_decision(d, book.mid)
         if d.action is Action.HOLD:
             return
