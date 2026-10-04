@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -191,6 +192,30 @@ def test_stream_sends_retry_hint_snapshot_then_new_rows(db):
     assert ev[0][1]["decisions"][-1]["id"] == ids[2]  # snapshot did not include the new row
     summaries = [d for n, d in ev if n == "summary"]
     assert summaries[-1]["decisions"] == 4 and summaries[-1]["n_fills"] == 3
+
+
+def test_stream_never_builds_a_summary_on_the_event_loop_thread(db, monkeypatch):
+    """build_summary reads every fill and scored row; on the trader's loop it would delay
+    model-latency timing and book stamping. It must run off the loop thread."""
+    seeded(db)
+    threads = []
+    real = server.build_summary
+
+    def spy(store, live):
+        threads.append(threading.get_ident())
+        return real(store, live)
+
+    monkeypatch.setattr(server, "build_summary", spy)
+
+    async def go():
+        loop_thread = threading.get_ident()
+        out = [e async for e in stream(db, stop_after(3))]
+        return loop_thread, out
+
+    loop_thread, chunks = asyncio.run(go())
+    assert len(threads) == 4  # the snapshot and each of 3 polls
+    assert loop_thread not in threads
+    assert [n for n, _ in parse_sse("".join(chunks))].count("summary") == 3
 
 
 def test_stream_does_not_repeat_rows(db):

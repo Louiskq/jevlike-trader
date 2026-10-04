@@ -123,6 +123,17 @@ def build_snapshot(store: Store, live: dict | None) -> dict:
     }
 
 
+def _build_off_loop(build, db_path: str, live: dict | None) -> dict:
+    """Run build(store, live) with its own connection (sqlite connections are per thread).
+    Called through asyncio.to_thread so the full-table reads never block the event loop,
+    which in a dry run is also the trader's."""
+    store = Store(db_path)
+    try:
+        return build(store, live)
+    finally:
+        store.close()
+
+
 async def _sliced_sleep(poll_s: float, should_stop: Callable[[], bool]) -> None:
     """Sleep up to poll_s but wake within 0.1 s of should_stop(), so shutdown never waits
     on a long poll."""
@@ -146,7 +157,9 @@ async def event_stream(
     store = Store(db_path)
     try:
         yield f"retry: {RETRY_MS}\n\n"
-        snap = build_snapshot(store, live() if live else None)
+        snap = await asyncio.to_thread(
+            _build_off_loop, build_snapshot, db_path, live() if live else None
+        )
         yield _sse("snapshot", snap)
         last_decision, last_fill = snap["last_decision_id"], snap["last_fill_id"]
         while True:
@@ -159,7 +172,10 @@ async def event_stream(
             for row in store.fills_after(last_fill):
                 last_fill = row["id"]
                 yield _sse("fill", dict(row))
-            yield _sse("summary", build_summary(store, live() if live else None))
+            summary = await asyncio.to_thread(
+                _build_off_loop, build_summary, db_path, live() if live else None
+            )
+            yield _sse("summary", summary)
     finally:
         store.close()
 
