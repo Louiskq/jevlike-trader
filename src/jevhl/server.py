@@ -100,7 +100,6 @@ def build_summary(store: Store, live: dict | None) -> dict:
     counts = store.decision_counts()
     kill_reason = live.get("kill_reason") if live else None
     return {
-        "now": time.time(),
         "mid": mid,
         "position": ledger.position,
         "position_usd": position_usd,

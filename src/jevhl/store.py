@@ -230,8 +230,3 @@ class Store:
 
     def events(self) -> list[sqlite3.Row]:
         return self._db.execute("SELECT * FROM events ORDER BY ts, id").fetchall()
-
-    def last_event(self, kind: str) -> sqlite3.Row | None:
-        return self._db.execute(
-            "SELECT * FROM events WHERE kind = ? ORDER BY id DESC LIMIT 1", (kind,)
-        ).fetchone()

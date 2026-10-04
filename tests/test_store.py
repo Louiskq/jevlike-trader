@@ -241,11 +241,3 @@ def test_decision_counts(store):
     store.insert_decision(dec(ts=2, p=0.5, action=Action.HOLD, reason="below_gate"), mid=1.0)
     store.insert_decision(dec(ts=3, p=None, action=Action.HOLD, reason="late"), mid=1.0)
     assert store.decision_counts() == {"total": 3, "holds": 2, "late": 1}
-
-
-def test_last_event(store):
-    assert store.last_event("kill_switch") is None
-    store.log_event(1.0, "kill_switch", "daily_loss")
-    store.log_event(2.0, "skip", "x")
-    store.log_event(3.0, "kill_switch", "stale_book")
-    assert store.last_event("kill_switch")["detail"] == "stale_book"
