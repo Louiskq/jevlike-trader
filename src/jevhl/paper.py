@@ -51,7 +51,10 @@ class PaperExchange:
         room = -position if side == "buy" else position
         if room <= 0:
             return []
-        sz = round_size(min(Decimal(str(size)), Decimal(str(room))), self._meta)
+        # The float position carries summing error (0.000159999... for 0.00016): snap it to
+        # the nearest lot before the floor, or the last lot is left open.
+        room_d = Decimal(str(room)).quantize(Decimal(1).scaleb(-self._meta.sz_decimals))
+        sz = round_size(min(Decimal(str(size)), room_d), self._meta)
         if sz <= 0:
             return []
         return self._execute(book, side, sz, ts)

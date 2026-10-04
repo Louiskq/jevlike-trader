@@ -443,6 +443,23 @@ def test_float_residue_after_closing_two_entries_does_not_block_opposite_signal(
     assert tr.ledger.position < 0
 
 
+def test_exit_closes_the_whole_lot_despite_float_error_in_position():
+    # Entries of 0.00203 and 0.00016 BTC: after the first exit the float position is
+    # 0.00015999999999999999..., and flooring it to a lot used to leave 1e-5 open.
+    model = StubModel(p=0.65)
+    tr, store, clock, _ = make(model=model)
+    run(tr.on_book(mkbook()))
+    clock.t += 10
+    model.p = 0.6
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    model.p = 0.5
+    clock.t = T0 + 100
+    run(tr.on_book(mkbook(recv_ts=clock.t)))  # both exits are due
+    assert [f["sz"] for f in store.fills()] == [0.00203, 0.00016, 0.00203, 0.00016]
+    assert tr.ledger.position == 0.0
+    assert tr._exits == []
+
+
 def test_run_returns_promptly_after_watchdog_trips_while_feed_is_down():
     tr, store, clock, _ = make()
 
