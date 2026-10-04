@@ -1,0 +1,12 @@
+{
+ "commit_id": "05cd2f0ee5a0ad3d1be1350454108f5c127417e1",
+ "event": "COMMENT",
+ "body": "Review trail for M3: reviewer findings R1-R4 and break-it gaps B1-B5. No user catches at this gate; the user chose to fix R2-R4 and accepted node as a test-only dependency.",
+ "comments": [
+  {"path": "src/jevhl/server.py", "line": 143, "side": "RIGHT", "body": "Caught (reviewer): the summary was built on the trader's event loop, once per second per tab, inflating stored model latency (311 -> 512 ms max with 3 tabs). Now built in a worker thread. Fixed in 04d4244."},
+  {"path": "src/jevhl/static/app.js", "line": 83, "side": "RIGHT", "body": "Changed: only the 60 s reliability curve was drawn; the spec says 30 s and 300 s alongside. Now one curve per horizon, 60 s first. Fixed in c31f3b9."},
+  {"path": "src/jevhl/server.py", "line": 49, "side": "RIGHT", "body": "Caught (reviewer): a bind failure made uvicorn exit with a traceback after the URL was printed. Now a clean DashboardStartError and the URL prints only once listening. Fixed in ff3d502."},
+  {"path": "tests/node_required.py", "line": 12, "side": "RIGHT", "body": "Caught (reviewer): the JS tests skipped silently without node. Now they fail on CI and skip locally; the user accepted node as a test-only dependency. Fixed in a017ac6."},
+  {"path": "src/jevhl/run.py", "line": 81, "side": "RIGHT", "body": "Caught (reviewer, break-it): changing `<=` to `<` here passed every test. Test now probes exactly stale_s. Fixed in 5384c2d."}
+ ]
+}

@@ -71,3 +71,19 @@ The user kept all four choices and gave no rationale ("no reason").
 > **M2 / PR #8: double kill-switch event, WAL files not ignored.** Caught by: reviewer. What: a mid-decision trip logged two events; SQLite WAL/SHM files were not gitignored. Fix: 6754608. Prevention: exactly-one assertion in the R1 test; `.gitignore` patterns.
 
 > **M2 / PR #8: four deliberate bugs passed every test.** Caught by: reviewer (break-it). What: partial-exit retry removed, feed backoff never reset, order-error counter never reset, staleness judged on exchange time. Fix: 859e87f (tests only). Prevention: `test_partial_exit_is_retried_at_the_next_book`, `test_stream_backoff_doubles_on_failures_and_resets_after_a_book`, `test_order_error_counter_resets_after_a_successful_order`, and the three stale-book tests now using ts != recv_ts.
+
+## M3 / PR #9: decisions
+
+The user made these calls at the review gate and gave no rationale ("no reason").
+
+- **Accept `node` as a test-only system dependency (the spec says to ask first).** Chosen: accept; a missing node fails the JS tests on CI and skips them locally (alternative: rewrite the JS tests without node). Rationale (user): none given.
+- **Show reliability curves for all three horizons (60 s headline, 30 s and 300 s alongside), not Brier alone.** Chosen: all three curves (alternative: curve at 60 s only). Rationale (user): none given.
+- **Fix the port-in-use error (R3) and make CI fail without node (R4) rather than leave them as nits.** Chosen: fix both. Rationale (user): none given.
+
+## M3 / PR #9: caught mistakes
+
+> **M3 / PR #9: the dashboard stalled the trader's event loop.** Caught by: reviewer. What: the summary was built on the loop shared with the trader, once per second per open tab (about 73 ms per call at a day of data). Why it was wrong: with three tabs and a 300 ms model, max stored model latency went from 311 ms to 512 ms, which would distort the latency table. Fix: 04d4244 (each client's summary now built in a worker thread; no shared cache). Prevention: `test_stream_never_builds_a_summary_on_the_event_loop_thread`.
+
+> **M3 / PR #9: port in use gave a traceback and a false URL.** Caught by: reviewer. What: uvicorn exited the process on a bind failure after the URL had been printed. Fix: ff3d502. Prevention: `test_port_in_use_is_a_clean_specific_error_and_nothing_is_traded`.
+
+> **M3 / PR #9: five deliberate bugs passed every test.** Caught by: reviewer (break-it). What: swapped after/before-fee P&L labels, in-sample instead of running baseline (in app.js and in the summary), stop-callback deleted, stale bound `<=` changed to `<`. Fix: 5384c2d (tests only). Prevention: `test_pnl_panel_labels_match_the_server_numbers`, `test_brier_table_compares_against_the_running_baseline`, `test_stopping_the_server_stops_the_trader`, `test_trader_live_reports_waiting_live_stale_and_kill`.
