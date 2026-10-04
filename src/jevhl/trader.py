@@ -56,7 +56,7 @@ class Trader:
         self._last_book: Book | None = None
         self._recent: list[float] = []
         self._exits: list[_Exit] = []
-        self.stopped = False
+        self._stop = asyncio.Event()
         self.error: BaseException | None = None
         lot = 10.0 ** -paper.meta.sz_decimals
         self._dust = lot / 2
@@ -65,6 +65,17 @@ class Trader:
             # first book rather than leave it open.
             self._exits.append(_Exit(0.0, "sell" if ledger.position > 0 else "buy",
                                      abs(ledger.position)))
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    @stopped.setter
+    def stopped(self, value: bool) -> None:
+        if value:
+            self._stop.set()
+        else:
+            self._stop.clear()
 
     # ---- per snapshot ----
 
@@ -217,14 +228,27 @@ class Trader:
                 self.error = t.exception()
                 self.stopped = True
 
+        stop_wait = asyncio.create_task(self._stop.wait())
+        nxt: asyncio.Task | None = None
         try:
-            async for book in books:
-                if self.stopped:
+            while not self.stopped:
+                # Race the next book against stopping: a down feed yields nothing, and
+                # the watchdog's stop must still end the run.
+                nxt = asyncio.ensure_future(anext(books, None))
+                await asyncio.wait({nxt, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if not nxt.done() or self.stopped:
+                    break
+                book = nxt.result()
+                nxt = None
+                if book is None:
                     break
                 t = asyncio.create_task(self.on_book(book))
                 tasks.add(t)
                 t.add_done_callback(done)
         finally:
+            for pending in (stop_wait, nxt):
+                if pending is not None and not pending.done():
+                    pending.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             await self.shutdown()

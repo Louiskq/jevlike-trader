@@ -410,3 +410,21 @@ def test_float_residue_after_closing_two_entries_does_not_block_opposite_signal(
     run(tr.on_book(mkbook(recv_ts=clock.t)))
     assert reasons(store)[-1] == ("sell", "signal")
     assert tr.ledger.position < 0
+
+
+def test_run_returns_promptly_after_watchdog_trips_while_feed_is_down():
+    tr, store, clock, _ = make()
+
+    async def books():
+        yield mkbook(recv_ts=clock.t)
+        await asyncio.Event().wait()  # feed down: reconnecting, yields nothing, forever
+
+    async def scenario():
+        task = asyncio.create_task(tr.run(books()))
+        await asyncio.sleep(0.1)
+        clock.t += 20
+        assert tr.check_stale() == "stale_book"
+        await asyncio.wait_for(task, 1.0)
+
+    run(scenario())
+    assert tr.stopped and abs(tr.ledger.position) < 1e-9
