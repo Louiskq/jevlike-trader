@@ -42,3 +42,7 @@ Mainnet; withdrawals/transfers; multi-market; maker strategy; public dashboard; 
 > **M1 / PR #6: daily-loss baseline reset on restart.** Caught by: reviewer. What: the baseline was the first P&L the object saw, and `reset()` cleared it. Why it was wrong: after a restart or reset, another full daily limit could be lost the same UTC day. Fix: 222f9ad. Prevention: `test_day_start_pnl_survives_restart`, `test_reset_keeps_day_baseline`.
 
 > **M1 / PR #6: float tolerance untested.** Caught by: reviewer (break-it). What: setting `EPS = 0.0` in policy.py left all 107 tests passing. Why it was wrong: gates like 0.67 would silently fail to sell at the boundary. Fix: 615d979 (test only). Prevention: `test_boundary_trades_for_non_float_exact_gates`.
+
+## M2: spec change (multi-horizon labelling)
+
+- **Record outcomes at 30 s, 60 s and 300 s for every decision.** Trading, the gate and exits stay at 60 s; the dashboard headline Brier and reliability curve are 60 s, with 30 s and 300 s alongside. Alternative: 60 s only. Rationale (user): "yes do this". Caveat for the README: longer horizons overlap more, so their samples are less independent.
