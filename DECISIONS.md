@@ -15,7 +15,7 @@ Seeded from the spec interview (`.pipeline/spec-interview.md`). Entries are the 
 | Storage | SQLite | JSONL (no indexing, full reload to compute calibration) |
 | Gate default | 0.60 | 0.55 (more fee drag); 0.65 (too selective) |
 | Decider deadline | 2 s | 1 s (tight); 3 s (staleness approaches 8 s) |
-| Testnet caps | $50 position, $10 daily loss | Tighter $20/$5 |
+| Network and limits | Testnet only, no mainnet code. Defaults $500 position / $100 daily loss, configurable (amended after interview) | Original: $50/$10 hard caps with a typed-confirmation mainnet mode. Dropped because the user will never trade real money |
 | Dashboard | FastAPI + SSE, localhost | Public deployment (exposes trading activity) |
 
 ## Evaluation plan
