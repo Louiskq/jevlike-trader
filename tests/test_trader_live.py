@@ -314,3 +314,20 @@ def test_the_rate_guard_does_not_apply_to_the_paper_executor():
         clock.t = T0 + 5.3 * i
         run(tr.on_book(mkbook(recv_ts=clock.t)))
     assert len([f for f in store.fills() if f["side"] == "buy"]) >= 4
+
+
+def test_an_entry_that_waited_for_the_lock_past_stale_s_is_skipped():
+    tr, store, clock, fake, _ = make()
+    tr._last_poll = T0  # skip the backstop so the entry is what waits
+
+    async def scenario():
+        await tr._lock.acquire()  # the exchange is busy
+        t = asyncio.create_task(tr.on_book(mkbook(recv_ts=T0)))
+        await asyncio.sleep(0.1)  # the model has answered; the entry waits for the lock
+        clock.t = T0 + tr.cfg.stale_s + 1  # the book is now stale, the feed still healthy
+        tr._lock.release()
+        await t
+
+    run(scenario())
+    assert order_calls(fake) == [] and store.fills() == []
+    assert any("stale" in d for d in events(store, "order_skipped"))

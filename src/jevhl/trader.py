@@ -285,6 +285,11 @@ class Trader:
             if self.stopped or self._kill.tripped:  # halted while waiting for the exchange
                 self.store.log_event(self._clock(), "order_skipped", f"decision {decision_id}")
                 return
+            if self._clock() - book.recv_ts > self.cfg.stale_s:  # the wait made the book stale
+                self.store.log_event(
+                    self._clock(), "order_skipped", f"decision {decision_id}: stale book"
+                )
+                return
             if self._rate_limited():
                 self.store.log_event(
                     self._clock(), "order_skipped", f"decision {decision_id}: rate limit"
