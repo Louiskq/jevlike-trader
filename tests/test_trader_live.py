@@ -344,3 +344,65 @@ def test_an_entry_that_waited_for_the_lock_past_stale_s_is_skipped():
     run(scenario())
     assert order_calls(fake) == [] and store.fills() == []
     assert any("stale" in d for d in events(store, "order_skipped"))
+
+
+# ---- tests added for mutants that survived (reviewer break-it, B1-B3 and weak tests) ----
+
+
+def test_shutdown_closes_the_exchange_position_even_when_the_ledger_is_flat():  # B1
+    tr, store, clock, fake, _ = make(p=0.5)
+    fake._record(999, "BTC", True, 0.002, 65001.0)  # a position the ledger never saw
+    assert tr.ledger.position == 0.0 and fake.position > 0
+    run(tr.shutdown())
+    assert fake.position == pytest.approx(0.0, abs=1e-12)
+    assert tr.ledger.position == 0.0 and [r["oid"] for r in store.fills()][0] == 999
+
+
+def test_a_successful_exit_resets_the_consecutive_order_error_count():  # B3
+    tr, store, clock, fake, model = make()
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    model.p = 0.5
+    fake.fail_orders = [ConnectionError("blip")] * 2
+    for t in (60, 66):  # the exit fails twice
+        clock.t = T0 + t
+        run(tr.on_book(mkbook(recv_ts=clock.t)))
+    clock.t = T0 + 72  # and then succeeds
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert tr.ledger.position == 0.0 and not tr.stopped
+    model.p = 0.9
+    fake.fail_orders = [ConnectionError("blip")] * 2
+    for t in (140, 145):  # two more failures: 2 in a row, not 4
+        clock.t = T0 + t
+        run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert len(events(store, "order_error")) == 4 and not tr.stopped
+
+
+def test_the_stop_flag_is_set_before_the_flatten_starts():
+    tr, store, clock, fake, _ = make()
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    seen = []
+    real = tr._executor.flatten
+
+    def spy(*a, **k):
+        seen.append(tr.stopped)
+        return real(*a, **k)
+
+    tr._executor.flatten = spy
+    clock.t = T0 + 15.01
+    assert run(tr.check_stale()) == "stale_book"
+    assert seen == [True]
+
+
+def test_a_poll_that_waited_for_the_lock_does_nothing_if_the_bot_stopped_meanwhile():
+    tr, store, clock, fake, _ = make(p=0.5)
+
+    async def scenario():
+        await tr._lock.acquire()
+        t = asyncio.create_task(tr.on_book(mkbook(recv_ts=T0)))  # the poll is due at once
+        await asyncio.sleep(0.05)
+        tr.stopped = True
+        tr._lock.release()
+        await t
+
+    run(scenario())
+    assert [c for c in fake.calls if c[0] == "user_fills_by_time"] == []
