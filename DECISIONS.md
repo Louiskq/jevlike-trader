@@ -87,3 +87,12 @@ The user made these calls at the review gate and gave no rationale ("no reason")
 > **M3 / PR #9: port in use gave a traceback and a false URL.** Caught by: reviewer. What: uvicorn exited the process on a bind failure after the URL had been printed. Fix: ff3d502. Prevention: `test_port_in_use_is_a_clean_specific_error_and_nothing_is_traded`.
 
 > **M3 / PR #9: five deliberate bugs passed every test.** Caught by: reviewer (break-it). What: swapped after/before-fee P&L labels, in-sample instead of running baseline (in app.js and in the summary), stop-callback deleted, stale bound `<=` changed to `<`. Fix: 5384c2d (tests only). Prevention: `test_pnl_panel_labels_match_the_server_numbers`, `test_brier_table_compares_against_the_running_baseline`, `test_stopping_the_server_stops_the_trader`, `test_trader_live_reports_waiting_live_stale_and_kill`.
+
+## M4 / PR #10: decisions
+
+Made at the review gate. The user gave no rationale ("no reason").
+
+- **Keep the new `hyperliquid-python-sdk` dependency (24 pure-Python or prebuilt-wheel packages, no system packages).** Chosen: keep (alternative: hand-write signing and REST calls). Rationale (user): none given.
+- **Fix R3 (stale book), R4 (real reconcile) and R5 (60 s exit); leave R6-R8 as nits.** Rationale (user): none given.
+
+Decided by the orchestrator when the user said "decide yourself" (not the user's reasoning): the first-hour size check is a startup warning, not a refusal; fills made by hand in the UI are closed 60 s after they fill.

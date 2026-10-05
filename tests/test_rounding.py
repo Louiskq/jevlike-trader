@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from jevhl.rounding import AssetMeta, notional_ok, order_size, round_price, round_size
+from jevhl.rounding import (
+    AssetMeta,
+    aggressive_price,
+    notional_ok,
+    order_size,
+    reduce_size,
+    round_price,
+    round_size,
+)
 
 META = json.loads((Path(__file__).parent / "fixtures" / "meta_btc.json").read_text())
 BTC = AssetMeta.from_meta(META, "BTC")
@@ -97,3 +105,24 @@ def test_order_size_floors_when_above_min():
 def test_order_size_below_min_raises():
     with pytest.raises(ValueError):
         order_size(9.99, 65432, BTC, 10)
+
+
+def test_aggressive_price_moves_through_the_reference_and_rounds_outward():
+    assert aggressive_price("buy", 85518.0, BTC) == Decimal("85946")  # 85945.59 up
+    assert aggressive_price("sell", 85517.0, BTC) == Decimal("85089")  # 85089.415 down
+
+
+def test_reduce_size_snaps_float_residue_to_the_nearest_lot():
+    # 0.00016 summed from floats is 0.00015999999999999999: flooring it would leave a lot open
+    pos = 0.00007 + 0.00009
+    assert pos < 0.00016
+    assert reduce_size("sell", 0.00016, pos, BTC) == Decimal("0.00016")
+    assert reduce_size("buy", 0.00016, -pos, BTC) == Decimal("0.00016")
+
+
+def test_reduce_size_clamps_to_position_and_refuses_wrong_direction():
+    assert reduce_size("sell", 3.0, 1.5, BTC) == Decimal("1.5")
+    assert reduce_size("sell", 1.0, 0.0, BTC) == 0
+    assert reduce_size("sell", 1.0, -1.0, BTC) == 0
+    assert reduce_size("buy", 1.0, 1.0, BTC) == 0
+    assert reduce_size("sell", 0.000001, 1.0, BTC) == 0  # below one lot

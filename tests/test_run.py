@@ -108,7 +108,7 @@ def test_trader_live_reports_waiting_live_stale_and_kill():
         out.append(live())
         clock.t += 0.5  # past the bound
         out.append(live())
-        tr.check_stale()
+        await tr.check_stale()
         out.append(live())
         return out
 

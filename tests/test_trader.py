@@ -171,9 +171,9 @@ def test_stale_watchdog_trips_kill_switch_and_flattens():
     run(tr.on_book(mkbook(recv_ts=clock.t)))  # buys
     assert tr.ledger.position > 0
     clock.t += 14.99
-    assert tr.check_stale() is None and not tr.stopped
+    assert run(tr.check_stale()) is None and not tr.stopped
     clock.t += 0.02  # 15.01 s since the last book
-    assert tr.check_stale() == "stale_book"
+    assert run(tr.check_stale()) == "stale_book"
     assert tr.stopped
     assert abs(tr.ledger.position) < 1e-9  # flattened with a reduce-only order
     assert [e["detail"] for e in store.events() if e["kind"] == "kill_switch"] == ["stale_book"]
@@ -183,7 +183,7 @@ def test_no_decisions_after_stop():
     tr, store, clock, model = make()
     run(tr.on_book(mkbook()))
     clock.t += 20
-    tr.check_stale()
+    run(tr.check_stale())
     n = len(store.decisions())
     run(tr.on_book(mkbook(recv_ts=clock.t)))
     assert len(store.decisions()) == n
@@ -413,7 +413,7 @@ def test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed():
         t = asyncio.create_task(tr.on_book(mkbook(recv_ts=clock.t + 1)))
         await asyncio.sleep(0.05)  # model call is in flight
         clock.t += 20
-        assert tr.check_stale() == "stale_book"  # watchdog flattens and stops
+        assert await tr.check_stale() == "stale_book"  # watchdog flattens and stops
         await t
 
     run(scenario())
@@ -472,7 +472,7 @@ def test_run_returns_promptly_after_watchdog_trips_while_feed_is_down():
         task = asyncio.create_task(tr.run(books()))
         await asyncio.sleep(0.1)
         clock.t += 20
-        assert tr.check_stale() == "stale_book"
+        assert await tr.check_stale() == "stale_book"
         await asyncio.wait_for(task, 1.0)
 
     run(scenario())
@@ -507,7 +507,7 @@ def test_order_error_counter_resets_after_a_successful_order():
             raise RuntimeError("rejected")
         return []  # accepted, nothing filled
 
-    tr._paper.open = flaky_open
+    tr._executor.open = flaky_open
     for i in range(5):
         clock.t = T0 + 5.3 * i
         run(tr.on_book(mkbook(recv_ts=clock.t)))

@@ -3,8 +3,8 @@ from decimal import Decimal
 import pytest
 
 from jevhl.feed import Book
-from jevhl.paper import SLIPPAGE_BPS, TAKER_FEE_RATE, PaperExchange, limit_price
-from jevhl.rounding import AssetMeta
+from jevhl.paper import TAKER_FEE_RATE, PaperExchange, limit_price
+from jevhl.rounding import SLIPPAGE_BPS, AssetMeta
 from jevhl.store import Store
 
 BTC = AssetMeta("BTC", 5)

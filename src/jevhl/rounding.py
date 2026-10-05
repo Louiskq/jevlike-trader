@@ -12,6 +12,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 MAX_SIG_FIGS = 5
 MAX_PERP_DECIMALS = 6
+SLIPPAGE_BPS = 50  # how far through the reference price a marketable IOC limit is set
 
 
 @dataclass(frozen=True)
@@ -63,3 +64,23 @@ def order_size(usd: float, px: float, meta: AssetMeta, min_notional: float) -> D
     if not notional_ok(sz, px, min_notional):
         sz += Decimal(1).scaleb(-meta.sz_decimals)
     return sz
+
+
+def aggressive_price(side: str, ref: float | Decimal, meta: AssetMeta) -> Decimal:
+    """Marketable IOC limit: the reference price moved SLIPPAGE_BPS in the aggressive
+    direction, then rounded outward (buys up, sells down) to exchange rules."""
+    slip = Decimal(SLIPPAGE_BPS) / Decimal(10_000)
+    if side == "buy":
+        return round_price(_dec(ref) * (1 + slip), meta, up=True)
+    return round_price(_dec(ref) * (1 - slip), meta, up=False)
+
+
+def reduce_size(side: str, size: float, position: float, meta: AssetMeta) -> Decimal:
+    """Size of a reduce-only order: never above the position, never in the growing direction
+    (returns 0 then). The float position carries summing error (0.000159999... for 0.00016),
+    so it is snapped to the nearest lot before the floor, or the last lot is left open."""
+    room = -position if side == "buy" else position
+    if room <= 0:
+        return Decimal(0)
+    room_d = Decimal(str(room)).quantize(Decimal(1).scaleb(-meta.sz_decimals))
+    return round_size(min(Decimal(str(size)), room_d), meta)
