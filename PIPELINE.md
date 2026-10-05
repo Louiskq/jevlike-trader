@@ -4,8 +4,8 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 3 (Normal mode, branch feat/m3-dashboard)
-- Next action: reviewer + break-it on M3 (PR draft open)
+- Current milestone: 4 (Normal mode, branch feat/m4-testnet-orders)
+- Next action: reviewer + break-it on M4 (PR #10 draft)
 - Waiting on: nothing
 
 ## Milestones
@@ -13,8 +13,8 @@
 |---|---|---|---|---|
 | 1 | Foundations and offline core | #1 | PR #6 + follow-up PR #7 | merged, v0.1 |
 | 2 | Live data and dry run | #2 | PR #8 | merged, v0.2 |
-| 3 | Dashboard | #3 | feat/m3-dashboard, draft PR | built, in review |
-| 4 | Testnet live orders | #4 | | todo |
+| 3 | Dashboard | #3 | PR #9 | merged, v0.3 |
+| 4 | Testnet live orders | #4 | PR #10 (draft) | built, in review |
 | 5 | Decider backend and soak | #5 | | todo |
 
 ## Notes for next build
@@ -77,3 +77,10 @@
 - 2026-10-04: M3 fixes R1-R4 + B1-B5 tests done (6 commits, 309 tests, verified by orchestrator, pushed). Builder note: R1 builds per client in a thread (no shared cache). User accepted node as test-only dep; R2-R4 fix chosen. Next: inline review, decisions gate.
 - 2026-10-04: user: 'no reason' for decisions (node accepted, 3 curves, fix R3/R4). DECISIONS.md, m3-inline.json, m3-pr-description.md drafted. At PR-description approval gate.
 - 2026-10-04: PR description approved and applied; inline review posted (5 comments). Records commit next.
+- 2026-10-04: records pushed (4944e55), CI green, PR #9 ready for review.
+- 2026-10-04: PR #9 merged (2956f6f); main verified (309 tests, ruff clean); v0.3 released; M3 done.
+- 2026-10-04: M4 mode = Normal; branch feat/m4-testnet-orders; builder launched (user has no testnet account yet; live acceptance deferred).
+- 2026-10-04: M4 built (3 commits, 419 tests, verified by orchestrator); pushed, draft PR #10. Live acceptance blocked on user testnet account. New dep hyperliquid-python-sdk.
+- 2026-10-05: M4 reviewer done after 2 failed attempts (network/stall): 2 must-fix, 3 should-fix, 3 nits, B1-B3 uncaught (.pipeline/m4-review.md). User chose R3-R5 fixes and keep SDK dep ('no reason'); orchestrator decided warning-not-refusal and 60 s exit for UI fills.
+- 2026-10-05: R1-R5 + B tests done (6 commits, 433 tests, verified, pushed). Manual TODO for user: set MAX_POSITION_USD=15 in .env.example (permission-denied for agents).
+- 2026-10-05: PR description approved and applied; inline review posted (5 comments). Records commit next.

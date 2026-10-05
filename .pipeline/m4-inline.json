@@ -1,0 +1,12 @@
+{
+ "commit_id": "bc65c8bb8b7ba239d3dd11e4845c7e28c8165aad",
+ "event": "COMMENT",
+ "body": "Review trail for M4: reviewer findings R1-R8 and break-it gaps B1-B3. No user catches at this gate; the user chose to fix R3-R5 and keep the SDK dependency. R6-R8 left as nits.",
+ "comments": [
+  {"path": "src/jevhl/run.py", "line": 54, "side": "RIGHT", "body": "Caught (reviewer): .env.example shipped MAX_POSITION_USD=500 while the comment said to keep the first live hour small. Added a --live startup warning above $15. Fixed in ea488d4. The .env.example value itself still needs a manual edit."},
+  {"path": "src/jevhl/trader.py", "line": 31, "side": "RIGHT", "body": "Caught (reviewer): nothing enforced the spec's 'about 2 orders per minute'; default config could send 4-11 per minute in bursts. Live entries now reserve room for their exit. Fixed in 63d9da7."},
+  {"path": "src/jevhl/trader.py", "line": 283, "side": "RIGHT", "body": "Caught (reviewer): an entry waiting for the lock could be sent on a book up to ~70 s old while the websocket stayed healthy. Book age is now re-checked after the lock. Fixed in d31833e."},
+  {"path": "src/jevhl/reconcile.py", "line": 24, "side": "RIGHT", "body": "Caught (reviewer): 'exchange P&L' came from the same fills and the same Ledger as the local P&L, so reconcile could never disagree. Now compares ledger realized P&L with the exchange's closedPnl. Fixed in bccafcf."},
+  {"path": "src/jevhl/trader.py", "line": 171, "side": "RIGHT", "body": "Caught (reviewer): a fill booked late by the backstop was closed at the next book (~15 s), not 60 s after it filled. Exit is now due at fill timestamp + horizon. Fixed in 5b79a00."}
+ ]
+}
