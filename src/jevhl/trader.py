@@ -28,6 +28,8 @@ from .types import HORIZONS_S, Action, Decision, ModelInput
 
 RECENT_MIDS = 20
 POLL_S = 15.0  # live backstop: re-read the exchange's fills this often
+MAX_ORDERS_PER_MIN = 2  # SPEC rate constraint, live only; entries reserve room for their exit
+RATE_WINDOW_S = 60.0
 
 
 @dataclass
@@ -65,6 +67,8 @@ class Trader:
         self._last_book: Book | None = None
         self._recent: list[float] = []
         self._exits: list[_Exit] = []
+        self._claimed = 0  # due exits taken by _run_exits and not yet sent
+        self._order_times: list[float] = []  # live order sends, for the rate guard
         self._stop = asyncio.Event()
         self.error: BaseException | None = None
         lot = 10.0 ** -executor.meta.sz_decimals
@@ -150,6 +154,20 @@ class Trader:
         self.store.log_event(self._clock(), "order_error", f"{what}: {type(e).__name__}: {e}")
         return applied
 
+    def _note_order(self) -> None:
+        self._order_times.append(self._clock())
+
+    def _rate_limited(self) -> bool:
+        """Live entries only: an entry is allowed when the orders sent in the last minute, plus
+        every exit still owed, plus this entry and its own exit, fit in the budget. Exits are
+        never gated, so the budget can never leave a position open."""
+        if not self._executor.live:
+            return False
+        now = self._clock()
+        self._order_times = [t for t in self._order_times if t > now - RATE_WINDOW_S]
+        owed = len(self._exits) + self._claimed
+        return len(self._order_times) + owed + 2 > MAX_ORDERS_PER_MIN
+
     def _cover_residue(self) -> None:
         """Give every part of the position that has no exit timer an immediate exit."""
         covered = sum(e.sz if e.side == "sell" else -e.sz for e in self._exits)
@@ -178,6 +196,13 @@ class Trader:
     async def _run_exits(self, book: Book) -> None:
         due = [e for e in self._exits if e.due_ts <= book.recv_ts]
         self._exits = [e for e in self._exits if e.due_ts > book.recv_ts]  # claimed: no double send
+        self._claimed += len(due)
+        try:
+            await self._send_exits(book, due)
+        finally:
+            self._claimed -= len(due)
+
+    async def _send_exits(self, book: Book, due: list[_Exit]) -> None:
         for ex in due:
             async with self._lock:
                 if self.stopped:  # halted while waiting: the flatten owns the position now
@@ -187,6 +212,7 @@ class Trader:
                         self._executor.close, book, ex.side, ex.sz, self.ledger.position,
                         book.recv_ts,
                     )
+                    self._note_order()
                     self._kill.on_order_result(True)
                     applied = self._apply(fills)
                 except Exception as e:
@@ -259,10 +285,16 @@ class Trader:
             if self.stopped or self._kill.tripped:  # halted while waiting for the exchange
                 self.store.log_event(self._clock(), "order_skipped", f"decision {decision_id}")
                 return
+            if self._rate_limited():
+                self.store.log_event(
+                    self._clock(), "order_skipped", f"decision {decision_id}: rate limit"
+                )
+                return
             try:
                 fills = await self._run(
                     self._executor.open, book, side, d.size_usd, book.recv_ts
                 )
+                self._note_order()  # a raised call is not counted: the kill switch bounds those
                 self._kill.on_order_result(True)
                 applied = self._apply(fills)
             except Exception as e:

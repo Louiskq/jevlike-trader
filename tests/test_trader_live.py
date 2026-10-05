@@ -266,3 +266,51 @@ def test_a_slow_order_does_not_block_the_event_loop():
 
     run(scenario())
     assert len(ticks) >= 8 and len(store.fills()) == 1
+
+
+def _order_times(fake, clock):
+    times, orig = [], fake.order
+
+    def spy(*a, **k):
+        times.append(clock.t)
+        return orig(*a, **k)
+
+    fake.order = spy
+    return times
+
+
+def test_live_orders_stay_within_about_two_per_minute_at_default_config():
+    tr, store, clock, fake, _ = make(p=0.65)
+    times = _order_times(fake, clock)
+    for i in range(40):  # ~3.5 minutes of books, the model always wants to add
+        clock.t = T0 + 5.3 * i
+        run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert len(times) >= 4  # it still trades
+    for t in times:
+        assert len([x for x in times if t <= x < t + 60]) <= 2
+    assert events(store, "order_skipped")  # the extra entries were skipped and logged
+    assert any("rate" in d for d in events(store, "order_skipped"))
+
+
+def test_the_rate_guard_never_blocks_an_exit():
+    tr, store, clock, fake, model = make(p=0.9)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    model.p = 0.5
+    # a burst of other orders just before the exit is due must not stop the exit
+    tr._order_times = [T0 + 59.0, T0 + 59.5, T0 + 59.9]
+    clock.t = T0 + 60
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert tr.ledger.position == 0.0 and fake.position == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_rate_guard_does_not_apply_to_the_paper_executor():
+    from jevhl.paper import PaperExchange
+
+    cfg, store, clock = Config(), Store(":memory:"), Clock()
+    ex = PaperExchange(store, BTC, "BTC")
+    kill = KillSwitch(cfg, clock, day_start_pnl=0.0)
+    tr = Trader(cfg, store, StubModel(p=0.65), ex, Ledger(), kill, clock=clock, perf=clock)
+    for i in range(6):
+        clock.t = T0 + 5.3 * i
+        run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert len([f for f in store.fills() if f["side"] == "buy"]) >= 4
