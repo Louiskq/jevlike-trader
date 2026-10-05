@@ -29,6 +29,7 @@ class FakeHL:
         self.fail_state: list[Exception] = []  # popped one per user_state call
         self.fail_mids: list[Exception] = []
         self.fail_cancel: list[Exception] = []
+        self._avg = 0.0  # average entry price of the open position, for closedPnl
 
     def _tick(self) -> int:
         self.now_ms += 1000
@@ -72,12 +73,20 @@ class FakeHL:
         ]}}}
 
     def _record(self, oid, coin, is_buy, sz, px):
+        sign = 1 if is_buy else -1
+        pos = self.position
+        closed = min(sz, abs(pos)) if pos * sign < 0 else 0.0
+        closed_pnl = closed * (px - self._avg) * (1 if pos > 0 else -1)
+        if pos * sign >= 0 or abs(pos) < 1e-12:
+            self._avg = (abs(pos) * self._avg + sz * px) / (abs(pos) + sz)
+        elif sz > closed:
+            self._avg = px
         self.position += sz if is_buy else -sz
         tid = self.next_tid
         self.next_tid += 1
         self.raw_fills.append({
             "coin": coin, "px": _s(px), "sz": _s(sz), "side": "B" if is_buy else "A",
-            "time": self._tick(), "startPosition": "0.0", "dir": "x", "closedPnl": "0.0",
+            "time": self._tick(), "startPosition": "0.0", "dir": "x", "closedPnl": _s(closed_pnl),
             "hash": "0x0", "oid": oid, "crossed": True, "fee": _s(px * sz * FEE_RATE),
             "tid": tid, "feeToken": "USDC",
         })

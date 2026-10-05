@@ -19,6 +19,8 @@ class Ledger:
         self.position = 0.0
         self.cash = 0.0
         self.fees = 0.0
+        self.realized = 0.0  # gross of fees, average-cost: what the exchange reports as closedPnl
+        self._avg = 0.0  # average entry price of the open position
 
     def apply_fill(self, side: str, sz: float, px: float, fee: float) -> None:
         if side not in ("buy", "sell"):
@@ -26,6 +28,14 @@ class Ledger:
         if not all(math.isfinite(x) for x in (sz, px, fee)) or sz <= 0 or px <= 0:
             raise ValueError(f"bad fill: sz={sz!r} px={px!r} fee={fee!r}")
         sign = 1 if side == "buy" else -1
+        old = self.position
+        if old * sign < 0:  # reduces (maybe flips) the position
+            closed = min(sz, abs(old))
+            self.realized += closed * (px - self._avg) * (1 if old > 0 else -1)
+            if sz > closed:
+                self._avg = px
+        else:
+            self._avg = (abs(old) * self._avg + sz * px) / (abs(old) + sz)
         self.position += sign * sz
         if abs(self.position) < FLAT_EPS:
             self.position = 0.0

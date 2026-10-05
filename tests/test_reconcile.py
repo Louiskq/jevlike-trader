@@ -88,6 +88,18 @@ def test_report_ok_when_the_store_matches_the_venue():
     assert "P&L" in text and "position" in text
 
 
+def test_report_compares_exchange_closed_pnl_with_the_ledger_realized_pnl():
+    fake = FakeHL()
+    store = _store_with(fake)
+    assert fake.raw_fills[-1]["closedPnl"] != "0.0"  # the venue reports a real round-trip P&L
+    text, ok = rc.run_reconcile(store, fake, ADDR, "BTC", BTC)
+    assert ok, text
+    assert "realized" in text
+    fake.raw_fills[-1]["closedPnl"] = "5.0"  # the exchange disagrees with our books
+    text, ok = rc.run_reconcile(store, fake, ADDR, "BTC", BTC)
+    assert not ok and "MISMATCH" in text and "realized P&L" in text
+
+
 def test_report_flags_a_fill_the_store_never_saw():
     fake = FakeHL()
     store = _store_with(fake, n=1)  # the closing fill was never stored

@@ -18,6 +18,27 @@ def test_round_trip_pnl_before_and_after_fees():
     assert lg.fees == pytest.approx(0.1171)
 
 
+def test_realized_pnl_is_gross_of_fees_and_average_cost():
+    lg = Ledger()
+    lg.apply_fill("buy", 0.002, 65000.0, 0.05)
+    lg.apply_fill("buy", 0.002, 65200.0, 0.05)  # average entry 65100
+    assert lg.realized == 0.0
+    lg.apply_fill("sell", 0.001, 65200.0, 0.05)
+    assert lg.realized == pytest.approx(0.1)
+    lg.apply_fill("sell", 0.003, 65000.0, 0.05)  # closes 0.003 and flips short 0 (exactly flat)
+    assert lg.realized == pytest.approx(0.1 + 0.003 * (65000.0 - 65100.0) * 1)
+    assert lg.position == pytest.approx(0.0)
+
+
+def test_realized_pnl_on_a_flip_and_on_shorts():
+    lg = Ledger()
+    lg.apply_fill("sell", 0.001, 65000.0, 0)
+    lg.apply_fill("buy", 0.003, 64900.0, 0)  # covers 0.001 at +100, opens 0.002 long at 64900
+    assert lg.realized == pytest.approx(0.1)
+    lg.apply_fill("sell", 0.002, 65000.0, 0)
+    assert lg.realized == pytest.approx(0.1 + 0.2)
+
+
 def test_short_then_unrealized():
     lg = Ledger()
     lg.apply_fill("sell", 0.001, 65000.0, 0.03)

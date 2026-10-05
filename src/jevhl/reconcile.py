@@ -4,8 +4,9 @@
 
 Reads only (needs HL_ACCOUNT_ADDRESS, no API key). Compares every stored live fill with the
 exchange's userFills by trade id (side, size, price, order id, fee), and the ledger's position
-with the exchange's. Exits 1 on any mismatch. Prints fees and P&L so they can be compared with
-the testnet UI by eye.
+with the exchange's. Also compares the ledger's realized P&L (before fees) with the sum of the
+exchange's own closedPnl. Exits 1 on any mismatch. Prints fees and P&L so they can be compared
+with the testnet UI by eye.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from .rounding import AssetMeta
 from .store import Store
 
 FEE_TOL = 1e-9  # float noise only; the exchange reports fees to ~6 decimals
+PNL_TOL = 1e-4  # dollars: closedPnl is rounded by the exchange, the ledger's is not
 
 
 def compare(
@@ -55,18 +57,26 @@ def run_reconcile(
     remote_pos = fetch_position(info, address, coin)
     ledger, remote_ledger = Ledger.from_fills(local), Ledger.from_fills(remote)
     problems = compare(local, remote, ledger.position, remote_pos, 10.0 ** -meta.sz_decimals / 2)
+    exchange_realized = sum(f["closed_pnl"] for f in remote)  # the exchange's own figure
+    if abs(ledger.realized - exchange_realized) > PNL_TOL:
+        problems.append(
+            f"realized P&L: ledger {ledger.realized:.6f} exchange closedPnl {exchange_realized:.6f}"
+        )
     lines = [f"reconcile {coin} for {address}"]
     if not local:
         lines.append("no live fills stored locally")
     lines.append(f"fills {len(local)} local, {len(remote)} on the exchange")
     lines.append(f"fees local ${ledger.fees:.6f}  exchange ${remote_ledger.fees:.6f}")
     lines.append(f"position local {ledger.position}  exchange {remote_pos}")
+    lines.append(
+        f"realized P&L before fees: ledger ${ledger.realized:.4f}  "
+        f"exchange closedPnl ${exchange_realized:.4f}"
+    )
     try:
         mid = float(info.all_mids()[coin])
         lines.append(
             f"P&L at mid {mid}: local before fees ${ledger.pnl_before_fees(mid):.4f} "
-            f"after fees ${ledger.pnl(mid):.4f}; from exchange fills before fees "
-            f"${remote_ledger.pnl_before_fees(mid):.4f} after fees ${remote_ledger.pnl(mid):.4f}"
+            f"after fees ${ledger.pnl(mid):.4f}"
         )
     except Exception as e:
         lines.append(f"P&L: no mid available ({type(e).__name__})")

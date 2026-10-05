@@ -258,7 +258,8 @@ def test_non_finite_position_raises():
 
 def raw(**kw):
     f = {"coin": "BTC", "px": "65001.0", "sz": "0.00153", "side": "B", "time": 1_700_000_005_000,
-         "oid": 9, "fee": "0.044", "tid": 77, "feeToken": "USDC", "hash": "0x0", "crossed": True}
+         "oid": 9, "fee": "0.044", "tid": 77, "feeToken": "USDC", "hash": "0x0", "crossed": True,
+         "closedPnl": "0.0"}
     f.update(kw)
     return f
 
@@ -266,13 +267,15 @@ def raw(**kw):
 def test_parse_fill_maps_the_documented_fields():
     f = parse_fill(raw())
     assert f == {"tid": 77, "oid": 9, "side": "buy", "sz": 0.00153, "px": 65001.0,
-                 "fee": 0.044, "ts": 1_700_000_005.0}
+                 "fee": 0.044, "ts": 1_700_000_005.0, "closed_pnl": 0.0}
+    assert parse_fill(raw(closedPnl="-1.25"))["closed_pnl"] == -1.25
     assert parse_fill(raw(side="A", fee="-0.002"))["side"] == "sell"  # a rebate is negative
     assert parse_fill(raw(side="A", fee="-0.002"))["fee"] == -0.002
 
 
 @pytest.mark.parametrize("bad", [
-    {"px": "nan"}, {"sz": "inf"}, {"fee": "NaN"}, {"sz": "0"}, {"px": "-1"}, {"side": "X"},
+    {"closedPnl": "nan"}, {"px": "nan"}, {"sz": "inf"}, {"fee": "NaN"}, {"sz": "0"},
+    {"px": "-1"}, {"side": "X"},
     {"tid": None}, {"feeToken": "HYPE"}, {"time": "soon"}, {"sz": "abc"},
 ])
 def test_parse_fill_rejects_bad_data(bad):

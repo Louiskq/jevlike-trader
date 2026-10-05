@@ -106,6 +106,7 @@ def parse_fill(raw: dict) -> dict:
             "tid": int(raw["tid"]), "oid": int(raw["oid"]), "side": side,
             "sz": _finite(raw["sz"], "sz"), "px": _finite(raw["px"], "px"),
             "fee": _finite(raw["fee"], "fee"), "ts": _finite(raw["time"], "time") / 1000.0,
+            "closed_pnl": _finite(raw["closedPnl"], "closedPnl"),  # gross of fees
         }
         token = raw.get("feeToken", "USDC")
     except (KeyError, TypeError, ValueError):
