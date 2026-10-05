@@ -45,6 +45,10 @@ def make(cfg=None, p=0.9, fake=None, store=None, **exkw):
     return tr, store, clock, fake, model
 
 
+def fake_fills(fake):
+    return [{"ts": f["time"] / 1000.0} for f in fake.raw_fills]
+
+
 def order_calls(fake):
     return [c for c in fake.calls if c[0] == "order"]
 
@@ -103,12 +107,17 @@ def test_unconfirmed_part_of_an_entry_is_booked_later_by_the_backstop_and_closed
     assert fake.position > 0.003
     fake.user_fills_by_time = real
     model.p = 0.5
-    clock.t = T0 + 16  # past the poll interval, before the 60 s exit
+    late_ts = max(f["ts"] for f in fake_fills(fake))  # when the late part filled
+    clock.t = T0 + 16  # past the poll interval, before any exit is due
     run(tr.on_book(mkbook(recv_ts=clock.t)))
-    assert len(store.fills()) == 3  # 2 entry fills + the late part, closed by the residue exit
-    assert tr.ledger.position == pytest.approx(0.003)  # the first exit is still pending
-    assert fake.position == pytest.approx(0.003)
-    clock.t = T0 + 61
+    assert len(store.fills()) == 2  # the confirmed part + the late part, now booked
+    assert tr.ledger.position == pytest.approx(fake.position) and fake.position > 0.003
+    assert len(order_calls(fake)) == 1  # nothing closed early: each entry lives 60 s
+    clock.t = T0 + 61  # the first exit (0.003) is due; the late part is not, it filled later
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert tr.ledger.position > 0  # the late part is still open
+    assert len(order_calls(fake)) == 2
+    clock.t = late_ts + 60.0
     run(tr.on_book(mkbook(recv_ts=clock.t)))
     assert tr.ledger.position == 0.0 and fake.position == pytest.approx(0.0, abs=1e-12)
 
@@ -131,9 +140,13 @@ def test_a_fill_made_outside_the_bot_is_booked_once_and_closed():
     fake._record(999, "BTC", True, 0.001, 65001.0)  # e.g. a click in the testnet UI
     clock.t = T0 + 16
     run(tr.on_book(mkbook(recv_ts=clock.t)))
-    assert [r["oid"] for r in store.fills()] == [999, 1000]  # booked, then closed by us
+    assert [r["oid"] for r in store.fills()] == [999]  # booked; its 60 s has not passed
+    assert tr.ledger.position == pytest.approx(0.001)
+    clock.t = fake.now_ms / 1000.0 + 60  # 60 s after that fill's timestamp
+    run(tr.on_book(mkbook(recv_ts=clock.t)))
+    assert [r["oid"] for r in store.fills()] == [999, 1000]  # then closed by us
     assert tr.ledger.position == 0.0 and fake.position == pytest.approx(0.0, abs=1e-12)
-    clock.t = T0 + 32
+    clock.t += 16
     run(tr.on_book(mkbook(recv_ts=clock.t)))  # the same fill is re-read: nothing doubles
     assert len(store.fills()) == 2 and tr.ledger.position == 0.0
 

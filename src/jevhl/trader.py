@@ -168,12 +168,12 @@ class Trader:
         owed = len(self._exits) + self._claimed
         return len(self._order_times) + owed + 2 > MAX_ORDERS_PER_MIN
 
-    def _cover_residue(self) -> None:
-        """Give every part of the position that has no exit timer an immediate exit."""
+    def _cover_residue(self, due_ts: float = 0.0) -> None:
+        """Give every part of the position that has no exit timer an exit at due_ts (0: now)."""
         covered = sum(e.sz if e.side == "sell" else -e.sz for e in self._exits)
         uncovered = self.ledger.position - covered
         if abs(uncovered) >= self._dust:
-            self._exits.append(_Exit(0.0, "sell" if uncovered > 0 else "buy", abs(uncovered)))
+            self._exits.append(_Exit(due_ts, "sell" if uncovered > 0 else "buy", abs(uncovered)))
 
     async def _poll_fills(self) -> None:
         """Live backstop: book fills no order call returned (a confirmation that timed out, a
@@ -189,9 +189,10 @@ class Trader:
             except Exception as e:
                 self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
                 return
-            if self._apply(fills):
+            if applied := self._apply(fills):
                 self.store.log_event(self._clock(), "fill_backstop", "booked unreturned fills")
-                self._cover_residue()
+                # like any entry, closed horizon_s after it filled (not at the next book)
+                self._cover_residue(max(f["ts"] for f in applied) + self.cfg.horizon_s)
 
     async def _run_exits(self, book: Book) -> None:
         due = [e for e in self._exits if e.due_ts <= book.recv_ts]
