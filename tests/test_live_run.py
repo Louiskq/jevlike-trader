@@ -184,3 +184,27 @@ def test_live_main_refuses_a_paper_database(tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "build_exchange", lambda cfg, meta, since_ms: exch(venue()))
     with pytest.raises(SystemExit, match="paper"):
         run_mod.main(["--live", "--db", str(db), "--seconds", "1"])
+
+
+def test_live_warns_when_max_position_is_above_the_first_hour_size():
+    assert run_mod.live_size_warning(Config(max_position_usd=15)) is None
+    msg = run_mod.live_size_warning(Config(max_position_usd=500))
+    assert msg and "MAX_POSITION_USD" in msg and "500" in msg
+
+
+def test_live_main_prints_the_size_warning_to_stderr_but_still_runs(
+    tmp_path, monkeypatch, capsys
+):
+    _env(monkeypatch)
+    monkeypatch.setenv("MAX_POSITION_USD", "500")
+    fake = venue(t0=time.time())
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
+    monkeypatch.setattr(run_mod, "stream_books", _books_now())
+    monkeypatch.setattr(run_mod, "MockModel", lambda: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_exchange", lambda cfg, meta, since_ms: exch(fake, since_ms))
+    run_mod.main(["--live", "--db", str(tmp_path / "l.db"), "--seconds", "1"])
+    cap = capsys.readouterr()
+    assert "WARNING" in cap.err and "MAX_POSITION_USD" in cap.err
+    monkeypatch.setenv("MAX_POSITION_USD", "15")
+    run_mod.main(["--live", "--db", str(tmp_path / "l2.db"), "--seconds", "1"])
+    assert "WARNING" not in capsys.readouterr().err

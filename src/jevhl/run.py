@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import time
 import urllib.request
 from collections.abc import AsyncIterator, Callable
@@ -45,6 +46,18 @@ def fetch_meta(coin: str) -> AssetMeta:
 
 class StartupError(RuntimeError):
     pass
+
+
+FIRST_HOUR_MAX_USD = 15.0  # SPEC: the first live hour runs at minimum size
+
+
+def live_size_warning(cfg: Config) -> str | None:
+    if cfg.max_position_usd <= FIRST_HOUR_MAX_USD:
+        return None
+    return (
+        f"WARNING: MAX_POSITION_USD is ${cfg.max_position_usd:g}; the first live hour should "
+        f"run at minimum size (MAX_POSITION_USD={FIRST_HOUR_MAX_USD:g}). Set it in .env."
+    )
 
 
 def live_since_ms(store: Store, now_s: float) -> int:
@@ -235,6 +248,8 @@ def main(argv: list[str] | None = None) -> None:
             prepare_live(store, exchange)
         except StartupError as e:
             raise SystemExit(f"error: {e}") from None
+        if warning := live_size_warning(cfg):
+            print(warning, file=sys.stderr, flush=True)
         print(f"LIVE testnet orders, {cfg.coin}: max position ${cfg.max_position_usd:g}, "
               f"max daily loss ${cfg.max_daily_loss_usd:g}", flush=True)
 
