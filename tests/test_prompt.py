@@ -38,3 +38,24 @@ def test_only_top_ten_levels_and_short_books():
     short = inp(bids=[[100.0, 1.0]], asks=[], recent_mids=[])
     text = render_context(short)
     assert "Top 10 asks:\nLast mids: \n" in text
+
+
+def test_cheap_coin_prices_keep_their_resolution():
+    doge = inp(
+        coin="DOGE", mid=0.12345,
+        bids=[[0.1234, 1000.0], [0.1233, 500.0]], asks=[[0.1235, 800.0], [0.1236, 100.0]],
+        recent_mids=[0.12341, 0.12352],
+    )
+    lines = render_context(doge).split("\n")
+    assert lines[0] == "Market: DOGE perpetual on Hyperliquid. Mid 0.123450, spread 1.23 bps."
+    assert lines[2] != lines[3]
+    assert lines[2] == "  0.12340 x 1000.0000" and lines[3] == "  0.12330 x 500.0000"
+    assert lines[5] == "  0.12350 x 800.0000" and lines[6] == "  0.12360 x 100.0000"
+    assert lines[7] == "Last mids: 0.12341, 0.12352"
+
+
+def test_mid_price_precision_scales_with_price():
+    # BTC keeps the draft's formats; mid has one more decimal than the levels
+    assert render_context(inp(mid=2500.456, recent_mids=[2500.04])).split("\n")[0].startswith(
+        "Market: BTC perpetual on Hyperliquid. Mid 2500.46,")
+    assert "Mid 150.457," in render_context(inp(mid=150.4567, recent_mids=[]))
