@@ -1,0 +1,12 @@
+{
+ "commit_id": "f0ca1319af86e7d1057540dd6b877ed07e85f2e5",
+ "event": "COMMENT",
+ "body": "Review trail for M5: reviewer findings R1-R4 (nits) and break-it gaps B1, B2, B4. No user catches at this gate; the user chose to fix R1-R4 and confirmed the HTTP contract.",
+ "comments": [
+  {"path": "src/jevhl/soak.py", "line": 63, "side": "RIGHT", "body": "Caught (reviewer): the soak report read the whole database, so a reused or restarted db could pair one run's starting memory with another run's ending memory. A run_start marker now scopes the report to the current run. Fixed in 7c3506b."},
+  {"path": "src/jevhl/prompt.py", "line": 30, "side": "RIGHT", "body": "Caught (reviewer): prices were printed at a fixed precision, so a cheap coin (e.g. DOGE ~0.2) rendered as a flat book with no error. Precision now scales with the price; BTC output is unchanged. Fixed in 7105162."},
+  {"path": "src/jevhl/soak.py", "line": 50, "side": "RIGHT", "body": "Caught (reviewer): the memory sample ran on the trader's event loop and, on macOS, started a `ps` process that could stall it for up to 5 s. Now read in a worker thread. Fixed in 74aae54."},
+  {"path": "src/jevhl/config.py", "line": 109, "side": "RIGHT", "body": "Caught (reviewer): the loopback-only rule for DECIDER_URL was enforced only when reading the environment, so a Config built directly could point off-box. validate() now applies the same rule. Fixed in 0b61806."},
+  {"path": "src/jevhl/model.py", "line": 60, "side": "RIGHT", "body": "Caught (reviewer, break-it): setting this tolerance to 0 passed every test, though it would reject real 4-decimal replies (0.3333/0.6666) and turn every decision into an invalid hold. Tests now cover a rounded pair (accepted) and a sum of 1.02 (rejected). Fixed in f0ca131."}
+ ]
+}

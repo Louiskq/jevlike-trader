@@ -4,8 +4,8 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 4 (Normal mode, branch feat/m4-testnet-orders)
-- Next action: reviewer + break-it on M4 (PR #10 draft)
+- Current milestone: 5 (Normal mode, branch feat/m5-decider-soak)
+- Next action: reviewer on M5 (draft PR)
 - Waiting on: nothing
 
 ## Milestones
@@ -14,8 +14,8 @@
 | 1 | Foundations and offline core | #1 | PR #6 + follow-up PR #7 | merged, v0.1 |
 | 2 | Live data and dry run | #2 | PR #8 | merged, v0.2 |
 | 3 | Dashboard | #3 | PR #9 | merged, v0.3 |
-| 4 | Testnet live orders | #4 | PR #10 (draft) | built, in review |
-| 5 | Decider backend and soak | #5 | | todo |
+| 4 | Testnet live orders | #4 | PR #10 | merged, v0.4; live acceptance pending |
+| 5 | Decider backend and soak | #5 | feat/m5-decider-soak | building |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -84,3 +84,12 @@
 - 2026-10-05: M4 reviewer done after 2 failed attempts (network/stall): 2 must-fix, 3 should-fix, 3 nits, B1-B3 uncaught (.pipeline/m4-review.md). User chose R3-R5 fixes and keep SDK dep ('no reason'); orchestrator decided warning-not-refusal and 60 s exit for UI fills.
 - 2026-10-05: R1-R5 + B tests done (6 commits, 433 tests, verified, pushed). Manual TODO for user: set MAX_POSITION_USD=15 in .env.example (permission-denied for agents).
 - 2026-10-05: PR description approved and applied; inline review posted (5 comments). Records commit next.
+- 2026-10-05: records pushed (a7c7a47), CI green, PR #10 ready.
+- 2026-10-05: PR #10 merged (e2274a0); main verified (433 tests, ruff clean); v0.4 released; M4 code done, live acceptance pending.
+- 2026-10-07: user has testnet funds, .env set (key 66 chars, address ok, MAX_POSITION_USD=15 in .env; .env.example edit unconfirmed). First live run NOT yet done. User paused work until the cluster is back; M5 needs the user's real model contract.
+- 2026-10-08: checked jev-class-9b on Isambard (job 7144550, 1 GH200, 2m13s): decider9b_full model COMPLETE, /decide returns probabilities; server-side latency p50 27 ms, max 28.6 ms over 17 requests; p_up mean 0.626 (18/20 above 0.5) with placeholder prompt, i.e. biased up. M5 needs: prompt wording (user's call), tunnel vs run-on-cluster, DeciderModel adapter. Test files in cluster ~/jevtest.
+- 2026-10-08: M5 mode = Normal; branch feat/m5-decider-soak; user: draft prompt (labelled DRAFT) and bot runs on laptop via SSH tunnel; builder launched.
+- 2026-10-08: M5 built (3 commits, 508 tests, verified); pushed, draft PR opened. Prompt in src/jevhl/prompt.py is a DRAFT for the user to edit.
+- 2026-10-08: M5 reviewer done (.pipeline/m5-review.md): 0 must-fix, 4 nits (R1-R4), 4 weak tests, B1/B2(partial)/B4 uncaught. At review gate.
+- 2026-10-08: R1-R4 + break-it tests done (5 commits, 525 tests, verified, pushed f0ca131). User confirmed HTTP contract and chose R1-R4. DECISIONS.md, m5-inline.json, m5-pr-description.md drafted. At PR-description gate.
+- 2026-10-08: PR description approved and applied; inline review posted (5 comments). User: 'no reason' for decisions. Records commit next.
