@@ -137,7 +137,7 @@ def test_dry_run_main_needs_no_key_and_never_builds_an_exchange(tmp_path, monkey
     _env(monkeypatch, key=False, addr=False)
     monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
     monkeypatch.setattr(run_mod, "stream_books", _books_now())
-    monkeypatch.setattr(run_mod, "MockModel", lambda: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
 
     def boom(*a, **k):
         raise AssertionError("exchange built in a dry run")
@@ -157,7 +157,7 @@ def test_live_main_trades_on_the_fake_venue_and_reports_the_exchange_position(
     fake = venue(t0=time.time())
     monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
     monkeypatch.setattr(run_mod, "stream_books", _books_now())
-    monkeypatch.setattr(run_mod, "MockModel", lambda: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
     seen = {}
 
     def fake_build(cfg, meta, since_ms):
@@ -200,7 +200,7 @@ def test_live_main_prints_the_size_warning_to_stderr_but_still_runs(
     fake = venue(t0=time.time())
     monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
     monkeypatch.setattr(run_mod, "stream_books", _books_now())
-    monkeypatch.setattr(run_mod, "MockModel", lambda: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
     monkeypatch.setattr(run_mod, "build_exchange", lambda cfg, meta, since_ms: exch(fake, since_ms))
     run_mod.main(["--live", "--db", str(tmp_path / "l.db"), "--seconds", "1"])
     cap = capsys.readouterr()

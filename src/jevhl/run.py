@@ -286,7 +286,7 @@ def main(argv: list[str] | None = None) -> None:
     def on_event(kind: str, detail: str) -> None:
         store.log_event(time.time(), kind, detail)
 
-    model = build_model(cfg) if cfg.model == "decider" else MockModel()
+    model = build_model(cfg)
 
     async def go() -> Trader:
         if args.dashboard:

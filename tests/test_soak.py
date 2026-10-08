@@ -7,7 +7,7 @@ from jevhl import soak
 from jevhl.config import Config
 from jevhl.model import MockModel
 from jevhl.rounding import AssetMeta
-from jevhl.run import dry_run, format_report
+from jevhl.run import dry_run, dry_run_with_dashboard, format_report
 from jevhl.soak import MIN_DECISIONS_FOR_STUCK, current_rss_kb, rss_sampler, soak_report
 from jevhl.store import Store
 from jevhl.types import Action, Decision
@@ -100,6 +100,7 @@ def test_soak_report_flags_stuck_hold_rate(action, reason, word):
     _decisions(store, [(action, reason)] * MIN_DECISIONS_FOR_STUCK)
     (w,) = soak_report(store)["warnings"]
     assert "stuck" in w and word in w
+    assert w == f"WARNING: hold rate stuck at {word} over {MIN_DECISIONS_FOR_STUCK} decisions"
 
 
 def test_soak_report_no_stuck_warning_on_small_sample():
@@ -203,3 +204,55 @@ def test_dry_run_reads_rss_in_a_worker_thread():
         rss_every_s=3600, rss=rss,
     ))
     assert len(threads) >= 2 and threading.main_thread() not in threads
+
+
+@pytest.mark.parametrize("platform,expected_kb", [("darwin", 2048), ("linux", 2048 * 1024)])
+def test_rusage_fallback_converts_units_per_platform(monkeypatch, platform, expected_kb):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(soak, "_rss_proc", lambda: None)
+    monkeypatch.setattr(soak, "_rss_ps", lambda: None)
+    # macOS reports ru_maxrss in bytes, Linux in kB
+    maxrss = 2048 * 1024
+    monkeypatch.setattr(soak, "resource", SimpleNamespace(
+        RUSAGE_SELF=0, getrusage=lambda _: SimpleNamespace(ru_maxrss=maxrss)))
+    monkeypatch.setattr(soak, "sys", SimpleNamespace(platform=platform))
+    assert current_rss_kb() == expected_kb
+
+
+def _periodic_books(clock):
+    async def books():
+        for i in range(8):
+            clock.t = T0 + 5.3 * i
+            yield replace(REAL[i % 2], recv_ts=clock.t)
+            await asyncio.sleep(0.05)
+
+    return books()
+
+
+def _counting_rss():
+    counter = iter(range(1000, 100000))
+    return lambda: next(counter)
+
+
+def test_dry_run_samples_rss_periodically():
+    store = Store(":memory:")
+    clock = Clock()
+    asyncio.run(dry_run(
+        Config(), store, AssetMeta("BTC", 5), _periodic_books(clock), model=MockModel(seed=1),
+        clock=clock, rss_every_s=0.05, rss=_counting_rss(),
+    ))
+    rows = [int(e["detail"]) for e in store.events() if e["kind"] == "rss"]
+    assert len(rows) >= 5  # start + several periodic samples + end
+    assert rows == sorted(rows) and rows[0] == 1000
+
+
+def test_dry_run_with_dashboard_forwards_rss_settings():
+    store = Store(":memory:")
+    clock = Clock()
+    asyncio.run(dry_run_with_dashboard(
+        Config(), ":memory:", store, AssetMeta("BTC", 5), _periodic_books(clock), port=0,
+        model=MockModel(seed=1), clock=clock, rss_every_s=0.05, rss=_counting_rss(),
+    ))
+    rows = [int(e["detail"]) for e in store.events() if e["kind"] == "rss"]
+    assert len(rows) >= 5 and rows[0] == 1000

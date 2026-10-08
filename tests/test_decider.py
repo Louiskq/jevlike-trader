@@ -367,3 +367,20 @@ def test_validate_rejects_a_non_loopback_or_missing_decider_url(url):
 
 def test_validate_accepts_loopback_decider_url():
     Config(model="decider", decider_url="http://127.0.0.1:8000").validate()
+
+
+def _probs(up, down):
+    return {Q60: {"probabilities": {"up": up, "down": down}}}
+
+
+def test_rounded_probability_pair_within_tolerance_is_accepted():  # B1
+    from jevhl.model import parse_decision
+
+    assert parse_decision(_probs(0.3333, 0.6666), Q60) == 0.3333  # sums to 0.9999
+
+
+def test_probabilities_summing_to_1_02_are_rejected():  # B1
+    from jevhl.model import parse_decision
+
+    with pytest.raises(DeciderError):
+        parse_decision(_probs(0.5, 0.52), Q60)
