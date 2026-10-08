@@ -136,3 +136,28 @@ def test_dry_run_samples_rss_at_start_and_end_and_report_shows_soak():
     text = format_report(store, tr)
     assert "soak: rss start 1000 kB  end 1010 kB  max 1010 kB" in text
     assert "hold rate" in text and "late-hold rate" in text
+
+
+def _run_once(store, clock, values, n_books=3):
+    async def books():
+        for i in range(n_books):
+            clock.t = T0 + 5.3 * i
+            yield replace(REAL[i % 2], recv_ts=clock.t)
+            await asyncio.sleep(0.01)
+
+    return asyncio.run(dry_run(
+        Config(), store, AssetMeta("BTC", 5), books(), model=MockModel(seed=1), clock=clock,
+        rss_every_s=3600, rss=lambda: next(values),
+    ))
+
+
+def test_soak_report_covers_only_the_current_run_on_a_reused_db():
+    store = Store(":memory:")
+    _run_once(store, Clock(), iter([1000, 1010]), n_books=3)
+    first = soak_report(store)
+    _run_once(store, Clock(), iter([5000, 5010]), n_books=2)
+    r = soak_report(store)
+    assert (r["rss_start_kb"], r["rss_end_kb"], r["rss_max_kb"]) == (5000, 5010, 5010)
+    assert r["rss_samples"] == 2
+    assert r["decisions"] == 2 and first["decisions"] == 3
+    assert len(store.decisions()) == 5  # earlier run is still in the db, just not in the report

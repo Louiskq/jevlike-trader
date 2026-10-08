@@ -32,7 +32,7 @@ from .model import MockModel, build_model
 from .paper import PaperExchange
 from .rounding import AssetMeta
 from .server import DashboardStartError, create_app, make_server, serve
-from .soak import current_rss_kb, rss_sampler, soak_report
+from .soak import current_rss_kb, mark_run_start, rss_sampler, soak_report
 from .store import Store
 from .trader import Trader, kill_switch_from_store
 
@@ -114,6 +114,7 @@ async def dry_run(
         cfg, store, model or MockModel(), executor or PaperExchange(store, meta, cfg.coin),
         Ledger.from_fills(store.fills()), kill_switch_from_store(cfg, store, clock), clock=clock,
     )
+    mark_run_start(store, clock)
     if on_trader is not None:
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))

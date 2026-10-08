@@ -14,6 +14,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 
+RUN_START = "run_start"
 MIN_DECISIONS_FOR_STUCK = 50  # fewer decisions than this say nothing about the hold rate
 
 
@@ -59,9 +60,24 @@ async def rss_sampler(
         await asyncio.sleep(every_s)
 
 
+def mark_run_start(store, clock: Callable[[], float]) -> None:
+    """Log where this run begins: detail = id of the newest decision already stored."""
+    last = store.recent_decisions(1)
+    store.log_event(clock(), RUN_START, str(last[0]["id"] if last else 0))
+
+
 def soak_report(store) -> dict:
+    """RSS and hold rates for the latest run only (from its run_start marker), so a database
+    reused by a restart or a second run does not mix runs."""
+    events = sorted(store.events(), key=lambda e: e["id"])
+    after_decision_id = 0
+    for i in range(len(events) - 1, -1, -1):
+        if events[i]["kind"] == RUN_START:
+            after_decision_id = int(events[i]["detail"])
+            events = events[i + 1:]
+            break
     samples = []
-    for e in store.events():
+    for e in events:
         if e["kind"] == "rss":
             try:
                 kb = float(e["detail"])
@@ -69,7 +85,7 @@ def soak_report(store) -> dict:
                 continue
             if math.isfinite(kb) and kb > 0:
                 samples.append(int(kb))
-    rows = store.decisions()
+    rows = [r for r in store.decisions() if r["id"] > after_decision_id]
     n = len(rows)
     holds = sum(1 for r in rows if r["action"] == "hold")
     late = sum(1 for r in rows if r["reason"] == "late")
