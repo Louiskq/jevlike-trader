@@ -96,3 +96,21 @@ def test_malformed_account_address_is_rejected(bad):
 def test_secret_key_is_not_in_the_repr():
     c = Config.from_env({"HL_API_KEY": "0x" + "11" * 32})
     assert "1111" not in repr(c)
+
+
+def test_flatten_retry_window_defaults_to_ten_minutes_and_is_configurable():
+    assert Config.from_env({}).flatten_retry_window_s == 600
+    assert Config.from_env({"FLATTEN_RETRY_WINDOW_S": "90.5"}).flatten_retry_window_s == 90.5
+    assert Config.from_env({"FLATTEN_RETRY_WINDOW_S": "0"}).flatten_retry_window_s == 0
+
+
+@pytest.mark.parametrize("raw", ["-1", "-0.01", "nan", "inf", "-inf", "abc"])
+def test_bad_flatten_retry_window_is_rejected(raw):
+    with pytest.raises(ConfigError):
+        Config.from_env({"FLATTEN_RETRY_WINDOW_S": raw})
+
+
+@pytest.mark.parametrize("v", [float("nan"), float("inf"), -1.0])
+def test_validate_rejects_bad_flatten_window_set_directly(v):
+    with pytest.raises(ConfigError):
+        Config(flatten_retry_window_s=v).validate()
