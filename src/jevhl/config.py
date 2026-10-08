@@ -7,8 +7,11 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+MODELS = ("mock", "decider")
 
 
 class ConfigError(ValueError):
@@ -28,6 +31,29 @@ def _num(env: Mapping[str, str], name: str, default: float) -> float:
     return value
 
 
+def parse_decider_url(raw: str) -> str:
+    """The decider is reached through an SSH tunnel, so only plain http to loopback is
+    accepted. Returns the URL without a trailing slash."""
+    url = raw.strip()
+    if not url:
+        raise ConfigError("DECIDER_URL is required when MODEL=decider")
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise ConfigError(f"DECIDER_URL is not a valid URL: {raw!r}") from None
+    if parts.scheme != "http":
+        raise ConfigError("DECIDER_URL must be http:// (it points at a local tunnel)")
+    if parts.hostname not in _LOOPBACK:
+        raise ConfigError("DECIDER_URL must point at loopback (127.0.0.1, localhost or [::1])")
+    extras = (parts.username, parts.password, parts.query, parts.fragment)
+    if any(extras) or parts.path not in ("", "/"):
+        raise ConfigError("DECIDER_URL must be just http://host:port")
+    if port is not None and port == 0:
+        raise ConfigError("DECIDER_URL port must be 1-65535")
+    return url.rstrip("/")
+
+
 @dataclass(frozen=True)
 class Config:
     network: str = "testnet"
@@ -41,6 +67,8 @@ class Config:
     full_size_p: float = 0.80
     stale_s: float = 15
     max_order_errors: int = 3
+    model: str = "mock"
+    decider_url: str | None = None
     api_key: str | None = field(default=None, repr=False)
     # The MAIN account's public address (not the API wallet's): the API wallet only signs, and
     # asking info endpoints about the agent address returns nothing. Not a secret.
@@ -52,8 +80,14 @@ class Config:
         network = env.get("NETWORK", "testnet")
         if network != "testnet":
             raise ConfigError(f"only NETWORK=testnet is supported, got {network!r}")
+        model = env.get("MODEL") or "mock"
+        decider_url = None
+        if model == "decider":
+            decider_url = parse_decider_url(env.get("DECIDER_URL", ""))
         cfg = cls(
             network=network,
+            model=model,
+            decider_url=decider_url,
             coin=env.get("COIN") or "BTC",
             gate=_num(env, "GATE", 0.60),
             horizon_s=_num(env, "HORIZON_S", 60),
@@ -69,6 +103,10 @@ class Config:
     def validate(self) -> None:
         if self.account_address is not None and not _ADDRESS.fullmatch(self.account_address):
             raise ConfigError("HL_ACCOUNT_ADDRESS must be 0x followed by 40 hex digits")
+        if self.model not in MODELS:
+            raise ConfigError(f"MODEL must be one of {MODELS}, got {self.model!r}")
+        if self.model == "decider" and not self.decider_url:
+            raise ConfigError("DECIDER_URL is required when MODEL=decider")
         if not 0.5 < self.gate < 1:
             raise ConfigError("GATE must be in (0.5, 1)")
         if self.gate >= self.full_size_p:

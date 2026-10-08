@@ -84,6 +84,9 @@ class Trader:
     def stopped(self, value: bool) -> None:
         if value:
             self._stop.set()
+            abort = getattr(self._model, "abort", None)
+            if abort is not None:  # wake a model request in flight
+                abort()
         else:
             self._stop.clear()
 
