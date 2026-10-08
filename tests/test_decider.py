@@ -355,3 +355,15 @@ def test_build_model_selects_backend():
     assert isinstance(build_model(Config()), MockModel)
     m = build_model(Config.from_env({"MODEL": "decider", "DECIDER_URL": "http://127.0.0.1:8000"}))
     assert isinstance(m, DeciderModel)
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com:80", "http://10.0.0.5:8000", "https://127.0.0.1:8000", None, "",
+])
+def test_validate_rejects_a_non_loopback_or_missing_decider_url(url):
+    with pytest.raises(ConfigError):
+        Config(model="decider", decider_url=url).validate()
+
+
+def test_validate_accepts_loopback_decider_url():
+    Config(model="decider", decider_url="http://127.0.0.1:8000").validate()

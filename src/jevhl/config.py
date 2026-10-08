@@ -105,8 +105,8 @@ class Config:
             raise ConfigError("HL_ACCOUNT_ADDRESS must be 0x followed by 40 hex digits")
         if self.model not in MODELS:
             raise ConfigError(f"MODEL must be one of {MODELS}, got {self.model!r}")
-        if self.model == "decider" and not self.decider_url:
-            raise ConfigError("DECIDER_URL is required when MODEL=decider")
+        if self.model == "decider":
+            parse_decider_url(self.decider_url or "")
         if not 0.5 < self.gate < 1:
             raise ConfigError("GATE must be in (0.5, 1)")
         if self.gate >= self.full_size_p:
