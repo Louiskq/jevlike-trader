@@ -7,7 +7,8 @@ separate database for live runs. Credentials come from the environment, e.g.
 
     uv run --env-file .env python -m jevhl.run --live --db live.db --dashboard
 
-Env: COIN, GATE, MAX_POSITION_USD, MAX_DAILY_LOSS_USD, HL_API_KEY, HL_ACCOUNT_ADDRESS, ...
+Env: MODEL (mock|decider), DECIDER_URL, DECIDER_DEADLINE_S, COIN, GATE,
+MAX_POSITION_USD, MAX_DAILY_LOSS_USD, HL_API_KEY, HL_ACCOUNT_ADDRESS, ...
 (see config and .env.example). Testnet only.
 """
 
@@ -27,10 +28,11 @@ from .exchange import FILL_OVERLAP_MS, Exchange, build_exchange
 from .feed import INFO_URL, Book, stream_books
 from .latency import latency_report
 from .ledger import Ledger
-from .model import MockModel
+from .model import MockModel, build_model
 from .paper import PaperExchange
 from .rounding import AssetMeta
 from .server import DashboardStartError, create_app, make_server, serve
+from .soak import current_rss_kb, mark_run_start, rss_sampler, soak_report
 from .store import Store
 from .trader import Trader, kill_switch_from_store
 
@@ -103,15 +105,20 @@ async def dry_run(
     duration_s: float | None = None,
     on_trader: Callable[[Trader], None] | None = None,
     executor=None,
+    rss_every_s: float = 60.0,
+    rss: Callable[[], int] = current_rss_kb,
 ) -> Trader:
-    """The trading run. executor: the live Exchange, or None for simulated (paper) fills."""
+    """The trading run. executor: the live Exchange, or None for simulated (paper) fills.
+    Process memory is logged every rss_every_s seconds (and once at the end) for the soak report."""
     trader = Trader(
         cfg, store, model or MockModel(), executor or PaperExchange(store, meta, cfg.coin),
         Ledger.from_fills(store.fills()), kill_switch_from_store(cfg, store, clock), clock=clock,
     )
+    mark_run_start(store, clock)
     if on_trader is not None:
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))
+    sampler = asyncio.create_task(rss_sampler(store, clock, rss_every_s, rss))
     try:
         await asyncio.wait_for(trader.run(books), duration_s)
     except TimeoutError:
@@ -119,6 +126,9 @@ async def dry_run(
     finally:
         trader.stopped = True
         dog.cancel()
+        sampler.cancel()
+        await asyncio.gather(sampler, return_exceptions=True)
+        store.log_event(clock(), "rss", str(await asyncio.to_thread(rss)))
     return trader
 
 
@@ -152,6 +162,8 @@ async def dry_run_with_dashboard(
     on_ready: Callable[[int], None] | None = None,
     linger_s: float | None = 0.0,
     executor=None,
+    rss_every_s: float = 60.0,
+    rss: Callable[[], int] = current_rss_kb,
 ) -> Trader:
     """dry_run plus the dashboard on 127.0.0.1:port (0 = any free port) in the same event
     loop. If the kill switch stopped the trader, the dashboard stays up for linger_s seconds
@@ -183,7 +195,7 @@ async def dry_run_with_dashboard(
     try:
         trader = await dry_run(
             cfg, store, meta, books, model=model, clock=clock, duration_s=duration_s,
-            on_trader=traders.append, executor=executor,
+            on_trader=traders.append, executor=executor, rss_every_s=rss_every_s, rss=rss,
         )
         if trader.kill_reason and not server_task.done():
             await asyncio.wait({server_task}, timeout=linger_s)
@@ -195,6 +207,23 @@ async def dry_run_with_dashboard(
 
 def _f(x: float | None, nd: int = 4) -> str:
     return "n/a" if x is None else f"{x:.{nd}f}"
+
+
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.1%}"
+
+
+def format_soak(r: dict) -> list[str]:
+    def kb(x: int | None) -> str:
+        return "n/a" if x is None else f"{x} kB"
+
+    return [
+        f"soak: rss start {kb(r['rss_start_kb'])}  end {kb(r['rss_end_kb'])}  "
+        f"max {kb(r['rss_max_kb'])}  ({r['rss_samples']} samples)",
+        f"soak: decisions {r['decisions']}  hold rate {_pct(r['hold_rate'])}  "
+        f"late-hold rate {_pct(r['late_rate'])}",
+        *r["warnings"],
+    ]
 
 
 def format_report(store: Store, trader: Trader, exchange: Exchange | None = None) -> str:
@@ -214,6 +243,7 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
     for e in store.events():
         ev[e["kind"]] = ev.get(e["kind"], 0) + 1
     lines.append(f"events {ev}  fills {len(store.fills())}  fees ${trader.ledger.fees:.4f}")
+    lines.extend(format_soak(soak_report(store)))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
     if exchange is not None:
         try:
@@ -256,6 +286,8 @@ def main(argv: list[str] | None = None) -> None:
     def on_event(kind: str, detail: str) -> None:
         store.log_event(time.time(), kind, detail)
 
+    model = build_model(cfg)
+
     async def go() -> Trader:
         if args.dashboard:
             def announce(port: int) -> None:  # only once the server is really listening
@@ -264,11 +296,11 @@ def main(argv: list[str] | None = None) -> None:
             return await dry_run_with_dashboard(
                 cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
-                executor=exchange,
+                executor=exchange, model=model,
             )
         return await dry_run(
             cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
-            duration_s=args.seconds, executor=exchange,
+            duration_s=args.seconds, executor=exchange, model=model,
         )
 
     try:

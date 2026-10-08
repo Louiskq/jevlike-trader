@@ -96,3 +96,12 @@ Made at the review gate. The user gave no rationale ("no reason").
 - **Fix R3 (stale book), R4 (real reconcile) and R5 (60 s exit); leave R6-R8 as nits.** Rationale (user): none given.
 
 Decided by the orchestrator when the user said "decide yourself" (not the user's reasoning): the first-hour size check is a startup warning, not a refusal; fills made by hand in the UI are closed 60 s after they fill.
+
+## M5 / PR #11: decisions
+
+Made at the review gate. The user gave no rationale ("no reason").
+
+- **The HTTP contract: `POST /decide` with a question schema (options up/down); `p_up` is `probabilities["up"]`.** Chosen: confirmed by the user (alternative: a different format, to be described by the user). Rationale (user): none given.
+- **Fix R1-R4 rather than leave them as nits.** Rationale (user): none given.
+
+Decided by the orchestrator from the user's instructions (not the user's reasoning): the bot runs on the laptop and reaches the model through an SSH tunnel ("wherever latency is low"); the prompt in `src/jevhl/prompt.py` is the assistant's draft and the user has not edited it yet.
