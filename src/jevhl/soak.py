@@ -54,7 +54,7 @@ async def rss_sampler(
     """Log an `rss` event (detail = kB) now and then every every_s, until cancelled."""
     while True:
         try:
-            store.log_event(clock(), "rss", str(rss()))
+            store.log_event(clock(), "rss", str(await asyncio.to_thread(rss)))
         except Exception as e:  # sampling must never stop the bot
             store.log_event(clock(), "rss_error", f"{type(e).__name__}: {e}")
         await asyncio.sleep(every_s)

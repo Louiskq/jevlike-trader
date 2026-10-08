@@ -128,7 +128,7 @@ async def dry_run(
         dog.cancel()
         sampler.cancel()
         await asyncio.gather(sampler, return_exceptions=True)
-        store.log_event(clock(), "rss", str(rss()))
+        store.log_event(clock(), "rss", str(await asyncio.to_thread(rss)))
     return trader
 
 

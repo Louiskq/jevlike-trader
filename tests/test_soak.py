@@ -161,3 +161,45 @@ def test_soak_report_covers_only_the_current_run_on_a_reused_db():
     assert r["rss_samples"] == 2
     assert r["decisions"] == 2 and first["decisions"] == 3
     assert len(store.decisions()) == 5  # earlier run is still in the db, just not in the report
+
+
+def test_slow_rss_read_does_not_block_the_event_loop():
+    import time
+
+    store = Store(":memory:")
+    gaps = []
+
+    async def go():
+        task = asyncio.create_task(rss_sampler(store, Clock(), 10, lambda: time.sleep(0.4) or 7))
+        last = time.monotonic()
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(go())
+    assert max(gaps) < 0.2  # a blocking read would freeze the loop for the full 0.4 s
+
+
+def test_dry_run_reads_rss_in_a_worker_thread():
+    import threading
+
+    threads = []
+
+    def rss():
+        threads.append(threading.current_thread())
+        return 1234
+
+    store = Store(":memory:")
+
+    async def books():
+        yield replace(REAL[0], recv_ts=T0)
+
+    asyncio.run(dry_run(
+        Config(), store, AssetMeta("BTC", 5), books(), model=MockModel(seed=1), clock=Clock(),
+        rss_every_s=3600, rss=rss,
+    ))
+    assert len(threads) >= 2 and threading.main_thread() not in threads
