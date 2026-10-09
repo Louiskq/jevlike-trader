@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from .config import Config
@@ -30,6 +30,8 @@ RECENT_MIDS = 20
 POLL_S = 15.0  # live backstop: re-read the exchange's fills this often
 MAX_ORDERS_PER_MIN = 2  # SPEC rate constraint, live only; entries reserve room for their exit
 RATE_WINDOW_S = 60.0
+FLATTEN_RETRY_FIRST_S = 1.0  # first wait between flatten retries; doubles up to the cap
+FLATTEN_RETRY_CAP_S = 30.0
 
 
 @dataclass
@@ -56,10 +58,15 @@ class Trader:
         kill: KillSwitch,
         clock: Callable[[], float] = time.time,
         perf: Callable[[], float] = time.perf_counter,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self.cfg, self.store, self.ledger = cfg, store, ledger
         self._model, self._executor, self._kill = model, executor, kill
         self._lock = asyncio.Lock()  # one executor call at a time
+        self._flatten_lock = asyncio.Lock()  # one flatten (and its retries) at a time
+        self._sleep = sleep
+        self._retry_spent = False  # a retry sequence already ran out; later flattens try once
+        self.flatten_unresolved = False  # the last live flatten gave up: position may be open
         self._last_poll = 0.0
         self._clock, self._perf = clock, perf
         self._inflight = False
@@ -321,26 +328,78 @@ class Trader:
     async def _flatten(self) -> None:
         """Cancel and close everything. Live, the exchange's own position is what gets
         closed (the ledger may be behind it), and its fills are re-read afterwards so a
-        confirmation that timed out is still booked."""
-        async with self._lock:
-            book, pos = self._last_book, self.ledger.position
+        confirmation that timed out is still booked.
+
+        A failed live flatten (network down) is retried with a growing delay for up to
+        cfg.flatten_retry_window_s, each try re-reading the exchange's position and placing
+        only reduce-only closes. The wait is an awaited sleep and the lock is free during it,
+        so cancelling the task (a Ctrl-C) ends it at once. One retry sequence per run: a later
+        flatten (shutdown after a kill) joins it, or makes a single attempt if it was spent."""
+        async with self._flatten_lock:
             live = self._executor.live
-            if not live and (book is None or abs(pos) < self._dust):
-                return
+            window = 0.0 if not live or self._retry_spent else self.cfg.flatten_retry_window_s
+            deadline = self._clock() + window
+            delay, attempts, failed = FLATTEN_RETRY_FIRST_S, 0, False
             try:
-                fills = await self._run(self._executor.flatten, book, pos, self._clock())
-            except Exception as e:  # keep stopping even if the venue is unreachable
-                fills = getattr(e, "fills", [])
-                self.store.log_event(
-                    self._clock(), "flatten_failed", f"{type(e).__name__}: {e}"
-                )
-            self._apply(fills)
-            if live:
-                try:
-                    self._apply(await self._run(self._executor.sync_fills))
-                except Exception as e:
-                    self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
-            self._exits = []
+                while True:
+                    attempts += 1
+                    async with self._lock:
+                        err = await self._flatten_once(attempts)
+                    if err is None:
+                        break
+                    failed = True
+                    remaining = deadline - self._clock()
+                    if remaining <= 0:
+                        break
+                    await self._sleep(min(delay, remaining))
+                    delay = min(delay * 2, FLATTEN_RETRY_CAP_S)
+                if live:
+                    if err is None:
+                        if failed or self.flatten_unresolved:
+                            self.store.log_event(
+                                self._clock(), "flatten_recovered", f"flat after {attempts} tries"
+                            )
+                        self.flatten_unresolved = False
+                    else:
+                        self._give_up(f"{attempts} attempts, last error {err}")
+                async with self._lock:
+                    if live:
+                        try:
+                            self._apply(await self._run(self._executor.sync_fills))
+                        except Exception as e:
+                            self.store.log_event(
+                                self._clock(), "sync_error", f"{type(e).__name__}: {e}"
+                            )
+            except asyncio.CancelledError:
+                if live:
+                    self._give_up(f"interrupted after {attempts} attempts")
+                raise
+            finally:
+                self._exits = []
+
+    def _give_up(self, why: str) -> None:
+        self._retry_spent = True
+        self.flatten_unresolved = True
+        self.store.log_event(
+            self._clock(), "flatten_gave_up",
+            f"exchange position unknown, may still be open ({why})",
+        )
+
+    async def _flatten_once(self, attempt: int) -> str | None:
+        """One flatten try, caller holds the lock. Returns None if done, else the error."""
+        book, pos = self._last_book, self.ledger.position
+        live = self._executor.live
+        if not live and (book is None or abs(pos) < self._dust):
+            return None
+        try:
+            fills = await self._run(self._executor.flatten, book, pos, self._clock())
+            err = None
+        except Exception as e:  # keep stopping even if the venue is unreachable
+            fills = getattr(e, "fills", [])
+            err = f"{type(e).__name__}: {e}"
+            self.store.log_event(self._clock(), "flatten_failed", f"attempt {attempt}: {err}")
+        self._apply(fills)
+        return err
 
     async def _halt(self, reason: str | None) -> None:
         if self.stopped:  # already halted (e.g. the watchdog tripped mid-decision)

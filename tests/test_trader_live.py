@@ -3,6 +3,7 @@ exchange confirmations, exits and flatten go through the exchange, and every awa
 the stop state. No network, no key."""
 
 import asyncio
+import math
 import time
 
 import pytest
@@ -32,7 +33,7 @@ def venue(**kw):
     )
 
 
-def make(cfg=None, p=0.9, fake=None, store=None, **exkw):
+def make(cfg=None, p=0.9, fake=None, store=None, tsleep=None, delays=None, **exkw):
     cfg = cfg or Config()
     fake = fake or venue()
     store = store or Store(":memory:")
@@ -40,8 +41,13 @@ def make(cfg=None, p=0.9, fake=None, store=None, **exkw):
     ex = Exchange(fake, fake, ADDR, BTC, "BTC", since_ms=int(T0 * 1000) - 60_000, **exkw)
     clock = Clock()
     model = StubModel(p=p)
+    if delays is not None:  # flatten-retry waits that take no real time: record, move the clock
+        async def tsleep(d):
+            delays.append(d)
+            clock.t += d
     tr = Trader(cfg, store, model, ex, Ledger.from_fills(store.fills()),
-                KillSwitch(cfg, clock, day_start_pnl=0.0), clock=clock, perf=clock)
+                KillSwitch(cfg, clock, day_start_pnl=0.0), clock=clock, perf=clock,
+                **({"sleep": tsleep} if tsleep else {}))
     return tr, store, clock, fake, model
 
 
@@ -204,7 +210,7 @@ def test_stale_book_watchdog_flattens_the_exchange_position():
 
 
 def test_flatten_that_cannot_reach_the_venue_is_logged_and_the_bot_still_stops():
-    tr, store, clock, fake, _ = make(flatten_tries=1)
+    tr, store, clock, fake, _ = make(cfg=Config(flatten_retry_window_s=0), flatten_tries=1)
     run(tr.on_book(mkbook(recv_ts=T0)))
     fake.fail_state = [ConnectionError("down")] * 50
     run(tr.shutdown())
@@ -406,3 +412,201 @@ def test_a_poll_that_waited_for_the_lock_does_nothing_if_the_bot_stopped_meanwhi
 
     run(scenario())
     assert [c for c in fake.calls if c[0] == "user_fills_by_time"] == []
+
+
+# ---- keep retrying a failed flatten (issue #12) ----
+
+
+def down(n):
+    """The venue is unreachable for n user_state reads (flatten_tries=1 reads twice per try)."""
+    return [ConnectionError("dns")] * n
+
+
+def test_flatten_retries_with_growing_delay_until_the_network_returns():
+    delays: list[float] = []
+    tr, store, clock, fake, _ = make(flatten_tries=1, delays=delays)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(6)  # three whole attempts fail, the fourth works
+    run(tr.shutdown())
+    assert delays == [1, 2, 4]
+    assert fake.position == pytest.approx(0.0, abs=1e-12) and tr.ledger.position == 0.0
+    assert len(store.fills()) == 2  # entry and the close, booked
+    assert len(events(store, "flatten_failed")) == 3
+    assert len(events(store, "flatten_recovered")) == 1 and events(store, "flatten_gave_up") == []
+    assert not tr.flatten_unresolved
+    assert all(c[6] for c in order_calls(fake)[1:])  # only reduce-only closes
+
+
+def test_the_delay_doubles_to_a_cap_and_the_window_bounds_the_total_time():
+    delays: list[float] = []
+    cfg = Config(flatten_retry_window_s=100)
+    tr, store, clock, fake, _ = make(
+        cfg=cfg, flatten_tries=1, delays=delays
+    )
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+    start = clock.t
+    run(tr.shutdown())
+    assert delays == [1, 2, 4, 8, 16, 30, 30, 9]  # capped at 30 s, last one trimmed to the window
+    assert clock.t - start == pytest.approx(100)
+    assert fake.position > 0 and tr.flatten_unresolved
+    assert len(events(store, "flatten_failed")) == 9  # one per attempt
+    (gave_up,) = events(store, "flatten_gave_up")
+    assert "still open" in gave_up or "unknown" in gave_up.lower()
+    assert events(store, "flatten_recovered") == []
+
+
+def test_window_zero_is_a_single_attempt():
+    delays: list[float] = []
+    tr, store, clock, fake, _ = make(
+        cfg=Config(flatten_retry_window_s=0), flatten_tries=1,
+        delays=delays,
+    )
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+    run(tr.shutdown())
+    assert delays == [] and len(events(store, "flatten_failed")) == 1
+    assert len(events(store, "flatten_gave_up")) == 1 and tr.flatten_unresolved
+
+
+def test_fills_of_failed_attempts_are_booked_before_the_next_try_and_each_retry_rereads():
+    waits: list[float] = []
+    booked: list[float] = []
+
+    async def sleep(d):
+        waits.append(d)
+        booked.append(tr.ledger.position)  # what is booked while waiting
+        clock.t += d
+
+    tr, store, clock, fake, _ = make(flatten_tries=1, tsleep=sleep)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    entry = fake.position
+    # each order closes a third (rounded up to a lot): every flatten attempt falls short
+    fake.max_fill_sz = math.ceil(entry / 3 * 1e5 - 1e-9) / 1e5
+    run(tr.shutdown())
+    assert booked[0] < entry and booked == sorted(booked, reverse=True)  # shrinking as booked
+    assert fake.position == pytest.approx(0.0, abs=1e-12)
+    assert tr.ledger.position == pytest.approx(0.0, abs=1e-9)
+    assert len(store.fills()) > 2 and len(events(store, "flatten_recovered")) == 1
+
+
+def test_the_retry_wait_does_not_block_the_event_loop_or_hold_the_lock():
+    seen = {"locked": [], "ticks": 0}
+
+    async def sleep(d):
+        seen["locked"].append(tr._lock.locked())
+        await asyncio.sleep(0.02)  # really yields
+
+    tr, store, clock, fake, _ = make(flatten_tries=1, tsleep=sleep)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(4)
+
+    async def ticker():
+        while True:
+            seen["ticks"] += 1
+            await asyncio.sleep(0.005)
+
+    async def scenario():
+        t = asyncio.create_task(ticker())
+        await tr.shutdown()
+        t.cancel()
+
+    run(scenario())
+    assert seen["locked"] == [False, False] and seen["ticks"] > 3
+    assert fake.position == pytest.approx(0.0, abs=1e-12)
+
+
+def test_an_interrupt_during_the_retry_wait_ends_it_promptly_and_says_so():
+    tr, store, clock, fake, _ = make(flatten_tries=1)  # real asyncio.sleep: 1 s, 2 s ...
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+
+    async def scenario():
+        t0 = time.monotonic()
+        t = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.1)  # first attempt failed, now waiting (1 s if it were blocked)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return time.monotonic() - t0
+
+    assert run(scenario()) < 0.5
+    assert len(events(store, "flatten_failed")) == 1
+    (gave_up,) = events(store, "flatten_gave_up")
+    assert "interrupted" in gave_up and tr.flatten_unresolved
+    assert fake.position > 0
+
+
+def test_a_flatten_after_a_spent_retry_is_one_attempt_not_a_second_window():
+    delays: list[float] = []
+    cfg = Config(flatten_retry_window_s=10)
+    tr, store, clock, fake, _ = make(
+        cfg=cfg, flatten_tries=1, delays=delays
+    )
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+    clock.t = T0 + 15.01
+    assert run(tr.check_stale()) == "stale_book"  # the kill's flatten uses the window
+    spent = list(delays)
+    failed = len(events(store, "flatten_failed"))
+    assert spent and tr.flatten_unresolved
+    run(tr.shutdown())  # what run() does on its way out
+    assert delays == spent  # no new waiting
+    assert len(events(store, "flatten_failed")) == failed + 1
+
+
+def test_a_late_shutdown_that_finds_the_venue_back_closes_and_reports_recovery():
+    delays: list[float] = []
+    tr, store, clock, fake, _ = make(
+        cfg=Config(flatten_retry_window_s=0), flatten_tries=1,
+        delays=delays,
+    )
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(2)
+    clock.t = T0 + 15.01
+    run(tr.check_stale())
+    assert tr.flatten_unresolved
+    run(tr.shutdown())
+    assert not tr.flatten_unresolved and fake.position == pytest.approx(0.0, abs=1e-12)
+    assert len(events(store, "flatten_recovered")) == 1
+
+
+def test_a_second_flatten_while_one_is_retrying_joins_it_instead_of_starting_over():
+    delays: list[float] = []
+
+    async def sleep(d):
+        delays.append(d)
+        clock.t += d
+        await asyncio.sleep(0.01)
+
+    tr, store, clock, fake, _ = make(flatten_tries=1, tsleep=sleep)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(4)
+
+    async def scenario():
+        a = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.005)
+        b = asyncio.create_task(tr.shutdown())  # e.g. run()'s cleanup after a Ctrl-C
+        await asyncio.gather(a, b)
+
+    run(scenario())
+    assert delays == [1, 2]  # one retry sequence, not two
+    assert len(events(store, "flatten_recovered")) == 1
+
+
+def test_paper_flatten_is_not_retried():
+    from test_trader import make as make_paper
+
+    tr, store, clock, _ = make_paper()
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    calls = []
+
+    def boom(*a):
+        calls.append(1)
+        raise ConnectionError("x")
+
+    tr._executor.flatten = boom
+    tr._sleep = None  # any retry would blow up on this
+    run(tr.shutdown())
+    assert calls == [1] and len(events(store, "flatten_failed")) == 1
+    assert events(store, "flatten_gave_up") == []
