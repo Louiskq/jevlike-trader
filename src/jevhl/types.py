@@ -24,7 +24,8 @@ class Action(StrEnum):
 HORIZONS_S = (30, 60, 300)
 
 REASONS = frozenset(
-    {"signal", "below_gate", "blocked", "late", "stale", "cap_reached", "killed", "invalid"}
+    {"signal", "below_gate", "blocked", "late", "stale", "cap_reached", "killed", "paused",
+     "invalid"}
 )
 
 

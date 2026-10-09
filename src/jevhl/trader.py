@@ -69,6 +69,12 @@ class Trader:
         self._sleep = sleep
         self._retry_spent = False  # a retry sequence already ran out; later flattens try once
         self.flatten_unresolved = False  # the last live flatten gave up: position may be open
+        # A stale-book kill pauses instead of stopping (see _pause). Counted for the report.
+        self._paused = False
+        self._ok_since: float | None = None  # start of the current run of steady books
+        self._resuming = False  # a resume check is running (it awaits the exchange)
+        self.stale_pauses = 0
+        self.stale_resumes = 0
         self.abandoned_threads: list[threading.Thread] = []  # cut-off flatten calls, see above
         self._last_poll = 0.0
         self._clock, self._perf = clock, perf
@@ -101,6 +107,12 @@ class Trader:
             self._stop.clear()
 
     @property
+    def paused(self) -> bool:
+        """Paused after a stale-book kill: no new orders, the feed is still read. A stop
+        (shutdown, or a permanent kill while paused) ends the pause."""
+        return self._paused and not self.stopped
+
+    @property
     def last_book(self) -> Book | None:
         return self._last_book
 
@@ -113,7 +125,7 @@ class Trader:
     async def on_book(self, book: Book) -> None:
         if self.stopped:
             return
-        self._last_book = book
+        prev, self._last_book = self._last_book, book
         self._kill.on_book()
         self._recent = (self._recent + [book.mid])[-RECENT_MIDS:]
         self._resolve_outcomes(book)
@@ -121,6 +133,15 @@ class Trader:
         await self._run_exits(book)
         if self.stopped or await self._risk(book):
             return
+        if self._paused:
+            await self._settle(book, prev)
+            if self.stopped:
+                return
+            if self._paused:
+                self.store.insert_decision(
+                    hold("paused", ts=book.recv_ts, gate=self.cfg.gate), book.mid
+                )
+                return
         if self._inflight:
             self.store.log_event(self._clock(), "skip", "decision in flight")
             return
@@ -261,7 +282,7 @@ class Trader:
     async def _send_exits(self, book: Book, due: list[_Exit]) -> None:
         for ex in due:
             async with self._lock:
-                if self.stopped:  # halted while waiting: the flatten owns the position now
+                if self.stopped or self._paused:  # halted while waiting: the flatten owns it now
                     return
                 try:
                     fills = await self._run(
@@ -289,6 +310,8 @@ class Trader:
         """Watchdog, called about once a second: no book for stale_s trips the kill switch."""
         if self.stopped:
             return self._kill.reason
+        if self._paused:  # settling is judged from the gaps between books, see _settle
+            return None
         reason = self._kill.check()
         if reason:
             await self._halt(reason)
@@ -308,6 +331,8 @@ class Trader:
         d = await self._ask(inp, ts)
         if self.stopped or self._kill.tripped:  # tripped while the model was thinking
             d = hold("killed", ts=ts, gate=cfg.gate, p_up=d.p_up, latency_ms=d.latency_ms)
+        elif self._paused:  # paused while the model was thinking
+            d = hold("paused", ts=ts, gate=cfg.gate, p_up=d.p_up, latency_ms=d.latency_ms)
         decision_id = self.store.insert_decision(d, book.mid)
         if d.action is Action.HOLD:
             return
@@ -338,7 +363,7 @@ class Trader:
     async def _enter(self, book: Book, d: Decision, decision_id: int) -> None:
         side = d.action.value
         async with self._lock:
-            if self.stopped or self._kill.tripped:  # halted while waiting for the exchange
+            if self.stopped or self._kill.tripped or self._paused:  # halted/paused while waiting
                 self.store.log_event(self._clock(), "order_skipped", f"decision {decision_id}")
                 return
             if self._clock() - book.recv_ts > self.cfg.stale_s:  # the wait made the book stale
@@ -461,9 +486,86 @@ class Trader:
     async def _halt(self, reason: str | None) -> None:
         if self.stopped:  # already halted (e.g. the watchdog tripped mid-decision)
             return
+        if reason == "stale_book":
+            if self.stale_resumes < self.cfg.stale_resumes_max:
+                await self._pause()
+                return
+            detail = (f"stale book again after {self.stale_resumes} resumes "
+                      f"(limit {self.cfg.stale_resumes_max}): stopping for good")
+            self.store.log_event(self._clock(), "stale_gave_up", detail)
+            self._say(f"STALE GAVE UP: {detail}")
         self.stopped = True  # first: nothing new may start, and the run loop wakes
         self.store.log_event(self._clock(), "kill_switch", reason or "")
         await self._flatten()
+
+    async def _pause(self) -> None:
+        """A stale book: cancel and flatten as for any kill, but keep running, read the feed and
+        place nothing until _settle finds the feed healthy again. Flags first, before any
+        await, so nothing starts in between."""
+        self._paused = True
+        self._ok_since = None
+        self.stale_pauses += 1
+        self._kill.clear_stale()
+        self._retry_spent = False  # each pause gets its own flatten retry window
+        detail = (f"no book for over {self.cfg.stale_s:g} s; pause {self.stale_pauses}, "
+                  f"{self.stale_resumes} of {self.cfg.stale_resumes_max} resumes used")
+        self.store.log_event(self._clock(), "stale_pause", detail)
+        self._say(f"STALE PAUSE: {detail}; flattening, resuming after "
+                  f"{self.cfg.resume_after_s:g} s of steady books")
+        await self._flatten()
+
+    async def _settle(self, book: Book, prev: Book | None) -> None:
+        """While paused, one call per book. Steady means no gap between books over
+        resume_max_gap_s; a gap restarts the clock. Once steady for resume_after_s, resume,
+        but never while a flatten is running or unresolved, and only if the exchange (live) and
+        the ledger are flat. Anything not flat gets one more flatten and a fresh settling
+        period."""
+        cfg = self.cfg
+        if (self._ok_since is None or prev is None
+                or book.recv_ts - prev.recv_ts > cfg.resume_max_gap_s):
+            self._ok_since = book.recv_ts
+        if book.recv_ts - self._ok_since < cfg.resume_after_s:
+            return
+        if self._resuming or self._flatten_lock.locked():
+            return
+        self._resuming = True
+        try:
+            if self.flatten_unresolved:
+                await self._flatten()  # a spent retry sequence: one attempt
+                if self.stopped or not self._paused:
+                    return
+                if self.flatten_unresolved:
+                    self._ok_since = book.recv_ts
+                    return
+            flat = await self._is_flat()
+            if self.stopped or not self._paused:  # changed while we asked the exchange
+                return
+            if not flat:
+                self.store.log_event(self._clock(), "stale_resume_blocked", "position not flat")
+                self._say("STALE RESUME BLOCKED: position not flat, flattening again")
+                await self._flatten()
+                self._ok_since = book.recv_ts
+                return
+            self._paused = False
+            self.stale_resumes += 1
+            detail = (f"books steady for {cfg.resume_after_s:g} s; resume {self.stale_resumes} "
+                      f"of {cfg.stale_resumes_max}")
+            self.store.log_event(self._clock(), "stale_resume", detail)
+            self._say(f"STALE RESUME: {detail}")
+        finally:
+            self._resuming = False
+
+    async def _is_flat(self) -> bool:
+        if abs(self.ledger.position) >= self._dust:
+            return False
+        if not self._executor.live:
+            return True
+        async with self._lock:
+            try:
+                return abs(await self._run(self._executor.position)) < self._dust
+            except Exception as e:
+                self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
+                return False
 
     async def shutdown(self) -> None:
         """Clean shutdown: stop (queued orders re-check this), flatten."""
