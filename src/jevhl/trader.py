@@ -15,6 +15,7 @@ checked again before acting on the result.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -67,6 +68,7 @@ class Trader:
         self._sleep = sleep
         self._retry_spent = False  # a retry sequence already ran out; later flattens try once
         self.flatten_unresolved = False  # the last live flatten gave up: position may be open
+        self.abandoned_threads: list[threading.Thread] = []  # cut-off flatten calls, see above
         self._last_poll = 0.0
         self._clock, self._perf = clock, perf
         self._inflight = False
@@ -141,6 +143,48 @@ class Trader:
         if self._executor.live:
             return await asyncio.to_thread(fn, *args)
         return fn(*args)
+
+    async def _run_abandonable(self, fn, *args):
+        """Like _run, but in a daemon thread that a cancel may leave behind, so a Ctrl-C
+        during a blocked HTTP call returns at once (a default-executor thread would make
+        asyncio.run wait for it, 20-50 s). The thread is not orphaned: it is kept in
+        abandoned_threads and logged, and it dies with the process. Whatever it still does
+        (an order sent, its fills) is not booked here; the next start reads those fills back
+        from the exchange."""
+        if not self._executor.live:
+            return fn(*args)
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+
+        def settle(result, error) -> None:
+            if fut.done():  # cancelled meanwhile
+                return
+            if error is not None:
+                fut.set_exception(error)
+            else:
+                fut.set_result(result)
+
+        def work() -> None:
+            try:
+                result, error = fn(*args), None
+            except Exception as e:
+                result, error = None, e
+            try:
+                loop.call_soon_threadsafe(settle, result, error)
+            except RuntimeError:  # the loop is closed: nobody is waiting any more
+                pass
+
+        thread = threading.Thread(target=work, daemon=True, name=f"abandonable-{fn.__name__}")
+        thread.start()
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            self.abandoned_threads = [t for t in self.abandoned_threads if t.is_alive()]
+            self.abandoned_threads.append(thread)
+            self.store.log_event(
+                self._clock(), "flatten_attempt_abandoned", f"{fn.__name__} still running"
+            )
+            raise
 
     def _apply(self, fills: list[dict]) -> list[dict]:
         """Book fills. A live executor leaves storage to us: a fill whose tid is already
@@ -365,7 +409,7 @@ class Trader:
                 async with self._lock:
                     if live:
                         try:
-                            self._apply(await self._run(self._executor.sync_fills))
+                            self._apply(await self._run_abandonable(self._executor.sync_fills))
                         except Exception as e:
                             self.store.log_event(
                                 self._clock(), "sync_error", f"{type(e).__name__}: {e}"
@@ -392,7 +436,9 @@ class Trader:
         if not live and (book is None or abs(pos) < self._dust):
             return None
         try:
-            fills = await self._run(self._executor.flatten, book, pos, self._clock())
+            fills = await self._run_abandonable(
+                self._executor.flatten, book, pos, self._clock()
+            )
             err = None
         except Exception as e:  # keep stopping even if the venue is unreachable
             fills = getattr(e, "fills", [])

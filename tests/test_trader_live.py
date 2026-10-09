@@ -537,6 +537,30 @@ def test_an_interrupt_during_the_retry_wait_ends_it_promptly_and_says_so():
     assert fake.position > 0
 
 
+def test_cancelling_during_a_blocked_attempt_returns_at_once_and_the_thread_is_tracked():
+    class Slow(FakeHL):
+        def open_orders(self, address, dex=""):
+            time.sleep(1.5)  # an HTTP call running into its timeout
+            raise TimeoutError("read timeout")
+
+    fake = Slow(bids=[[65000.0, 5.0]], asks=[[65001.0, 5.0]], t0_ms=int(T0 * 1000))
+    tr, store, clock, fake, _ = make(fake=fake, flatten_tries=1)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+
+    async def scenario():
+        t = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.1)  # inside the blocked call
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+
+    t0 = time.monotonic()
+    run(scenario())  # asyncio.run also waits for the default executor's threads
+    assert time.monotonic() - t0 < 0.8
+    assert len(events(store, "flatten_attempt_abandoned")) == 1
+    assert len(tr.abandoned_threads) == 1 and tr.flatten_unresolved
+
+
 def test_a_flatten_after_a_spent_retry_is_one_attempt_not_a_second_window():
     delays: list[float] = []
     cfg = Config(flatten_retry_window_s=10)

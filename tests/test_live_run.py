@@ -262,7 +262,7 @@ def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_b
 
         def open_orders(self, address, dex=""):
             if self.hang:
-                time.sleep(1)  # an HTTP call running into its timeout
+                time.sleep(2)  # an HTTP call running into its timeout
                 raise TimeoutError("read timeout")
             return super().open_orders(address, dex)
 
@@ -276,10 +276,13 @@ def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_b
 
     db = _live_main_env(tmp_path, monkeypatch, fake, books)
     _sigint_at(0.4, 0.8)
+    t0 = time.monotonic()
     with pytest.raises(SystemExit) as e:
         run_mod.main(["--live", "--db", db])
+    took = time.monotonic() - t0
     out = capsys.readouterr().out
     assert e.value.code == 130 and out.rstrip().endswith("by hand") and "GAVE UP" in out
+    assert took < 1.5  # not the 1 s the blocked call still needs after the second Ctrl-C
     kinds = [r["kind"] for r in Store(db).events()]
     assert kinds.count("flatten_gave_up") == 1
 
