@@ -156,7 +156,7 @@ def trader_live(trader: Trader, clock: Callable[[], float]) -> Callable[[], dict
             feed = "live" if clock() - book.recv_ts <= trader.cfg.stale_s else "stale"
             mid = book.mid
         return {"mid": mid, "feed": feed, "kill_reason": trader.kill_reason,
-                "stopped": trader.stopped}
+                "stopped": trader.stopped, "paused": trader.paused}
 
     return live
 
@@ -187,7 +187,8 @@ async def dry_run_with_dashboard(
     def live() -> dict:
         if traders:
             return trader_live(traders[0], clock)()
-        return {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False}
+        return {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False,
+                "paused": False}
 
     box: dict = {}
     app = create_app(db_path, live, should_stop=lambda: box["server"].should_exit)
@@ -268,6 +269,8 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
         ev[e["kind"]] = ev.get(e["kind"], 0) + 1
     lines.append(f"events {ev}  fills {len(store.fills())}  fees ${trader.ledger.fees:.4f}")
     lines.extend(format_soak(soak_report(store)))
+    lines.append(f"stale pauses {trader.stale_pauses}  resumes {trader.stale_resumes}"
+                 + ("  (paused at the end)" if trader.paused else ""))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
     if exchange is not None:
         try:

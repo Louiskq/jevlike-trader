@@ -114,3 +114,14 @@ def test_brier_verdict_needs_enough_samples():
     sm = summary()
     sm["calibration"][0]["n"] = 29
     assert render(snap(sm))["brier"][0][4] == "too few samples"
+
+
+def test_kill_chip_shows_paused_apart_from_tripped_and_ok():
+    ok = render(snap(summary()))["kill"]
+    paused = render(snap(summary(kill={"state": "paused", "reason": "stale_book"})))["kill"]
+    tripped = render(snap(summary(kill={"state": "tripped", "reason": "stale_book"},
+                                  stopped=True)))["kill"]
+    assert ok == ["kill switch: ok", "chip good"]
+    assert paused[0].startswith("kill switch: PAUSED (stale_book") and "TRIPPED" not in paused[0]
+    assert paused[1] == "chip warn"
+    assert tripped == ["kill switch: TRIPPED (stale_book), stopped", "chip bad"]

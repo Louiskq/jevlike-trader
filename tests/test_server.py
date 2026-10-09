@@ -117,6 +117,16 @@ def test_summary_kill_state_from_live(db):
     assert ok["kill"] == {"state": "ok", "reason": None}
 
 
+def test_summary_shows_a_pause_as_its_own_state_not_a_kill(db):
+    s, _ = seeded(db)
+    live = {"mid": 100.0, "feed": "stale", "kill_reason": None, "stopped": False, "paused": True}
+    out = build_summary(s, live)
+    assert out["kill"] == {"state": "paused", "reason": "stale_book"} and out["stopped"] is False
+    # a permanent kill wins over a leftover paused flag
+    dead = build_summary(s, {**live, "kill_reason": "daily_loss", "stopped": True})
+    assert dead["kill"] == {"state": "tripped", "reason": "daily_loss"}
+
+
 def test_summary_current_decision_is_latest(db):
     s, ids = seeded(db)
     d = build_summary(s, None)["decision"]

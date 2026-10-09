@@ -102,7 +102,7 @@ def test_trader_live_reports_waiting_live_stale_and_kill():
     clock = Clock()
 
     async def go():
-        tr, cfg = _trader(clock)
+        tr, cfg = _trader(clock, stale_resumes_max=0)
         live = trader_live(tr, clock)
         out = [live()]
         await tr.on_book(replace(REAL[0], recv_ts=clock.t))
@@ -118,10 +118,26 @@ def test_trader_live_reports_waiting_live_stale_and_kill():
         return out
 
     waiting, fresh, inside, exact, stale, killed = asyncio.run(go())
-    assert waiting == {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False}
+    assert waiting == {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False,
+                       "paused": False}
     assert fresh["feed"] == "live" and fresh["mid"] == REAL[0].mid
     assert inside["feed"] == "live" and exact["feed"] == "live" and stale["feed"] == "stale"
     assert killed["kill_reason"] == "stale_book" and killed["stopped"] is True
+    assert killed["paused"] is False
+
+
+def test_trader_live_reports_a_stale_pause_as_paused_not_killed():
+    clock = Clock()
+
+    async def go():
+        tr, cfg = _trader(clock)
+        await tr.on_book(replace(REAL[0], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        return trader_live(tr, clock)()
+
+    live = asyncio.run(go())
+    assert live["paused"] is True and live["stopped"] is False and live["kill_reason"] is None
 
 
 def _read_events(url, wanted, max_lines=400):
@@ -227,7 +243,8 @@ def test_dashboard_stays_up_after_kill_switch_and_shows_it(tmp_path):
         # the mock clock never advances on its own, so staleness is driven by real time here
         tr = await asyncio.wait_for(
             dry_run_with_dashboard(
-                Config(stale_s=1), db, store, AssetMeta("BTC", 5), books(), port=0,
+                Config(stale_s=1, stale_resumes_max=0), db, store, AssetMeta("BTC", 5),
+                books(), port=0,
                 model=MockModel(seed=1), clock=time.time, duration_s=None,
                 on_ready=lambda port: tasks.append(asyncio.create_task(client(port))),
                 linger_s=3.0,
@@ -450,3 +467,24 @@ def test_open_feed_passes_the_configured_liveness_timers(monkeypatch):
     monkeypatch.setattr(run_mod, "stream_books", lambda coin, clock, **kw: seen.update(kw))
     run_mod.open_feed(Config(feed_ping_s=2.5, feed_dead_s=3.5), lambda k, d: None)
     assert (seen["ping_s"], seen["dead_s"]) == (2.5, 3.5)
+
+
+def test_report_counts_stale_pauses_and_resumes():
+    clock = Clock()
+
+    async def go():
+        tr, cfg = _trader(clock, resume_after_s=0)
+        await tr.on_book(replace(REAL[0], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        out = [format_report(tr.store, tr)]
+        clock.t += 1
+        await tr.on_book(replace(REAL[1], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        out.append(format_report(tr.store, tr))
+        return out
+
+    paused, again = asyncio.run(go())
+    assert "stale pauses 1  resumes 0  (paused at the end)" in paused
+    assert "stale pauses 2  resumes 1  (paused at the end)" in again
