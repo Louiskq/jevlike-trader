@@ -15,6 +15,7 @@ checked again before acting on the result.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -395,7 +396,9 @@ class Trader:
                     remaining = deadline - self._clock()
                     if remaining <= 0:
                         break
-                    await self._sleep(min(delay, remaining))
+                    wait = min(delay, remaining)
+                    self._say(f"flatten attempt {attempts} failed ({err}); retrying in {wait:g} s")
+                    await self._sleep(wait)
                     delay = min(delay * 2, FLATTEN_RETRY_CAP_S)
                 if live:
                     if err is None:
@@ -403,9 +406,12 @@ class Trader:
                             self.store.log_event(
                                 self._clock(), "flatten_recovered", f"flat after {attempts} tries"
                             )
+                            self._say(f"flatten recovered: flat after {attempts} attempts")
                         self.flatten_unresolved = False
                     else:
                         self._give_up(f"{attempts} attempts, last error {err}")
+                        self._say(f"FLATTEN GAVE UP after {attempts} attempts ({err}): the "
+                                  "position may still be open on the exchange, close it by hand")
                 async with self._lock:
                     if live:
                         try:
@@ -420,6 +426,10 @@ class Trader:
                 raise
             finally:
                 self._exits = []
+
+    def _say(self, msg: str) -> None:
+        """Tell the operator at the terminal (the events table is not watched during a retry)."""
+        print(msg, file=sys.stderr, flush=True)
 
     def _give_up(self, why: str) -> None:
         self._retry_spent = True

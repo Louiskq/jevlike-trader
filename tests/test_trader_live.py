@@ -537,6 +537,29 @@ def test_an_interrupt_during_the_retry_wait_ends_it_promptly_and_says_so():
     assert fake.position > 0
 
 
+def test_each_failed_attempt_and_the_outcome_are_printed_to_stderr(capsys):
+    delays: list[float] = []
+    tr, store, clock, fake, _ = make(flatten_tries=1, delays=delays)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(4)  # two attempts fail (two reads each), the third works
+    run(tr.shutdown())
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 3
+    assert "attempt 1" in err[0] and "dns" in err[0] and "retrying in 1 s" in err[0]
+    assert "attempt 2" in err[1] and "retrying in 2 s" in err[1]
+    assert "recovered" in err[2] and "3 attempts" in err[2]
+
+
+def test_giving_up_prints_a_final_line_to_stderr(capsys):
+    tr, store, clock, fake, _ = make(cfg=Config(flatten_retry_window_s=0), flatten_tries=1)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+    run(tr.shutdown())
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and "GAVE UP" in err[0] and "1 attempts" in err[0]
+    assert "by hand" in err[0]
+
+
 def test_cancelling_during_a_blocked_attempt_returns_at_once_and_the_thread_is_tracked():
     class Slow(FakeHL):
         def open_orders(self, address, dex=""):
