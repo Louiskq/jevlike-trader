@@ -250,7 +250,23 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
             lines.append(f"exchange position {exchange.position()} {exchange.coin} (should be 0)")
         except Exception as e:  # never hide the rest of the report
             lines.append(f"exchange position UNKNOWN ({type(e).__name__}): check it by hand")
+    if trader.flatten_unresolved:
+        lines.append(GAVE_UP)
     return "\n".join(lines)
+
+
+GAVE_UP = ("FLATTEN GAVE UP: the position may still be open on the exchange, "
+           "close it by hand")
+
+
+def interrupted_report(store: Store, exchange: Exchange, now: float) -> str:
+    """Printed when a second Ctrl-C cut the shutdown short: the flatten may not have finished."""
+    try:
+        pos = f"exchange position {exchange.position()} {exchange.coin}"
+    except Exception as e:  # never hide the rest of the report
+        pos = f"exchange position UNKNOWN ({type(e).__name__})"
+    store.log_event(now, "flatten_gave_up", "interrupted by a second Ctrl-C")
+    return f"interrupted: flatten cut short; {pos}\n{GAVE_UP}"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -307,6 +323,10 @@ def main(argv: list[str] | None = None) -> None:
         trader = asyncio.run(go())
     except DashboardStartError as e:
         raise SystemExit(f"error: {e}") from None
+    except KeyboardInterrupt:  # a second Ctrl-C: it aborts a flatten that is still retrying
+        if exchange is not None:
+            print(interrupted_report(store, exchange, time.time()), flush=True)
+        raise SystemExit(130) from None
     print(format_report(store, trader, exchange))
 
 

@@ -12,7 +12,13 @@ from jevhl.feed import parse_message
 from jevhl.latency import latency_report
 from jevhl.model import MockModel
 from jevhl.rounding import AssetMeta
-from jevhl.run import dry_run, dry_run_with_dashboard, format_report, trader_live
+from jevhl.run import (
+    dry_run,
+    dry_run_with_dashboard,
+    format_report,
+    interrupted_report,
+    trader_live,
+)
 from jevhl.store import Store
 from jevhl.trader import Trader
 
@@ -410,3 +416,37 @@ def test_main_port_in_use_prints_one_error_line_no_traceback_no_url(
 async def _never_books():
     for _ in ():
         yield  # an async generator that yields nothing
+
+
+class _Ex:
+    coin = "BTC"
+
+    def __init__(self, pos=None):
+        self.pos = pos
+
+    def position(self):
+        if self.pos is None:
+            raise ConnectionError("dns")
+        return self.pos
+
+
+def test_report_ends_with_a_clear_line_when_the_flatten_gave_up():
+    store = Store(":memory:")
+    tr = asyncio.run(dry_run(Config(), store, AssetMeta("BTC", 5), _none(), model=MockModel()))
+    assert "GAVE UP" not in format_report(store, tr)
+    tr.flatten_unresolved = True
+    last = format_report(store, tr, _Ex()).splitlines()[-1]
+    assert last.startswith("FLATTEN GAVE UP") and "by hand" in last
+
+
+def test_a_second_ctrl_c_report_says_the_position_may_be_open():
+    store = Store(":memory:")
+    ex_unknown = interrupted_report(store, _Ex(), 1.0)
+    assert "UNKNOWN" in ex_unknown and "by hand" in ex_unknown
+    assert "0.00017" in interrupted_report(store, _Ex(-0.00017), 1.0)
+    assert [e["kind"] for e in store.events()] == ["flatten_gave_up"] * 2
+
+
+async def _none():
+    return
+    yield
