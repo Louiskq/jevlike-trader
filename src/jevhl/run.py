@@ -88,6 +88,11 @@ def prepare_live(store: Store, exchange: Exchange) -> None:
         )
 
 
+def open_feed(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncIterator[Book]:
+    return stream_books(cfg.coin, time.time, on_event=on_event,
+                        ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
+
+
 async def _watchdog(trader: Trader, every_s: float = 1.0) -> None:
     while not trader.stopped:
         await trader.check_stale()
@@ -321,12 +326,12 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"dashboard: http://127.0.0.1:{port}/ (Ctrl-C to stop)", flush=True)
 
             return await dry_run_with_dashboard(
-                cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
+                cfg, args.db, store, meta, open_feed(cfg, on_event),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
                 on_trader=traders.append, executor=exchange, model=model,
             )
         return await dry_run(
-            cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
+            cfg, store, meta, open_feed(cfg, on_event),
             duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
         )
 

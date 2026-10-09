@@ -112,11 +112,14 @@ async def stream_books(
     connect: Callable = websockets.connect,
     on_event: Callable[[str, str], None] = lambda kind, detail: None,
     sleep: Callable = asyncio.sleep,
-    ping_s: float = 20.0,
+    ping_s: float = 4.0,
+    dead_s: float = 6.0,
     max_backoff_s: float = 10.0,
 ) -> AsyncIterator[Book]:
     """Yield books forever: subscribe, ping when idle, reconnect with backoff on any
-    connection failure. Malformed messages are reported through on_event and skipped."""
+    connection failure. A socket that stays open but silent is pinged after ping_s; if
+    nothing at all arrives within dead_s more it is dropped and reconnected the same way.
+    Malformed messages are reported through on_event and skipped."""
     backoff = 1.0
     sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}
     while True:
@@ -124,12 +127,19 @@ async def stream_books(
             async with connect(url) as ws:
                 await ws.send(json.dumps(sub))
                 on_event("connect", url)
+                pinged = False
                 while True:
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), ping_s)
+                        raw = await asyncio.wait_for(ws.recv(), dead_s if pinged else ping_s)
                     except TimeoutError:
+                        if pinged:
+                            raise ConnectionError(
+                                f"no data for {ping_s + dead_s:g} s (pinged, no reply)"
+                            ) from None
                         await ws.send(json.dumps({"method": "ping"}))
+                        pinged = True
                         continue
+                    pinged = False
                     try:
                         book = parse_message(raw, coin, clock())
                     except ParseError as e:

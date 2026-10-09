@@ -441,3 +441,12 @@ def test_report_ends_with_a_clear_line_when_the_flatten_gave_up():
 async def _none():
     return
     yield
+
+
+def test_open_feed_passes_the_configured_liveness_timers(monkeypatch):
+    import jevhl.run as run_mod
+
+    seen = {}
+    monkeypatch.setattr(run_mod, "stream_books", lambda coin, clock, **kw: seen.update(kw))
+    run_mod.open_feed(Config(feed_ping_s=2.5, feed_dead_s=3.5), lambda k, d: None)
+    assert (seen["ping_s"], seen["dead_s"]) == (2.5, 3.5)
