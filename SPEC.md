@@ -41,7 +41,7 @@ Dashboard shows: live mid and markers, current decision (`p_up`, action, gate, s
 
 - Testnet only. Config rejects any network other than testnet; no mainnet code, URLs or confirmation flow exist. Position and daily-loss limits default to $500 / $100 and are configurable.
 - API (agent) wallet key only. Key only from `.env`, which is in `.gitignore` before it exists. Never logged, never committed. No withdrawal or transfer code anywhere.
-- Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, stop, show on dashboard. Also flatten on clean shutdown.
+- Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, show on dashboard. Daily-loss and order-error kills stop the bot for good. A stale-book kill instead pauses it (no new orders, feed still read) and it may resume once books have arrived continuously for a settling period (default 60 s) and no flatten is unresolved; at most 5 such resumes per run, after which the next stale kill is permanent. Every pause, resume and give-up is logged and shown. Also flatten on clean shutdown.
 - Signing and orders only through the SDK. Price and size rounded to exchange rules (tick, lot, significant figures), and tested.
 - Well inside rate limits (`.pipeline/hl-facts.md`): one WS, few subscriptions, at most about 2 orders per minute plus light polling.
 - Ask before adding any dependency that needs system packages.
