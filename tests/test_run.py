@@ -16,7 +16,6 @@ from jevhl.run import (
     dry_run,
     dry_run_with_dashboard,
     format_report,
-    interrupted_report,
     trader_live,
 )
 from jevhl.store import Store
@@ -437,14 +436,6 @@ def test_report_ends_with_a_clear_line_when_the_flatten_gave_up():
     tr.flatten_unresolved = True
     last = format_report(store, tr, _Ex()).splitlines()[-1]
     assert last.startswith("FLATTEN GAVE UP") and "by hand" in last
-
-
-def test_a_second_ctrl_c_report_says_the_position_may_be_open():
-    store = Store(":memory:")
-    ex_unknown = interrupted_report(store, _Ex(), 1.0)
-    assert "UNKNOWN" in ex_unknown and "by hand" in ex_unknown
-    assert "0.00017" in interrupted_report(store, _Ex(-0.00017), 1.0)
-    assert [e["kind"] for e in store.events()] == ["flatten_gave_up"] * 2
 
 
 async def _none():

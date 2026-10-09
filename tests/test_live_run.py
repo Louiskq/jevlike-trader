@@ -2,6 +2,9 @@
 the fake venue. No network, no key."""
 
 import asyncio
+import os
+import signal
+import threading
 import time
 
 import pytest
@@ -208,3 +211,73 @@ def test_live_main_prints_the_size_warning_to_stderr_but_still_runs(
     monkeypatch.setenv("MAX_POSITION_USD", "15")
     run_mod.main(["--live", "--db", str(tmp_path / "l2.db"), "--seconds", "1"])
     assert "WARNING" not in capsys.readouterr().err
+
+
+# ---- stopping: Ctrl-C and --seconds while a flatten is (or may be) retrying ----
+
+
+def _live_main_env(tmp_path, monkeypatch, fake, books):
+    _env(monkeypatch)
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
+    monkeypatch.setattr(run_mod, "stream_books", books)
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_exchange",
+                        lambda cfg, meta, since_ms: exch(fake, since=since_ms))
+    return str(tmp_path / "l.db")
+
+
+def _sigint_at(*delays):
+    for d in delays:
+        threading.Timer(d, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+
+
+def test_one_ctrl_c_stops_a_live_run_with_the_normal_report_and_no_gave_up(
+    tmp_path, monkeypatch, capsys
+):
+    fake = venue(t0=time.time())
+
+    async def books(*a, **k):
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(3600)
+
+    db = _live_main_env(tmp_path, monkeypatch, fake, books)
+    _sigint_at(0.5)
+    with pytest.raises(SystemExit) as e:
+        run_mod.main(["--live", "--db", db])
+    out = capsys.readouterr().out
+    assert e.value.code == 130
+    assert "GAVE UP" not in out
+    assert "decisions 1" in out and "exchange position 0" in out
+    assert fake.position == pytest.approx(0.0, abs=1e-12)
+    kinds = [r["kind"] for r in Store(db).events()]
+    assert "flatten_gave_up" not in kinds
+
+
+def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_be_open(
+    tmp_path, monkeypatch, capsys
+):
+    class Slow(FakeHL):
+        hang = False
+
+        def open_orders(self, address, dex=""):
+            if self.hang:
+                time.sleep(1)  # an HTTP call running into its timeout
+                raise TimeoutError("read timeout")
+            return super().open_orders(address, dex)
+
+    fake = Slow(bids=[[65000.0, 5.0]], asks=[[65001.0, 5.0]], t0_ms=int(time.time() * 1000))
+
+    async def books(*a, **k):
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(0.1)
+        fake.hang = True
+        await asyncio.sleep(3600)
+
+    db = _live_main_env(tmp_path, monkeypatch, fake, books)
+    _sigint_at(0.4, 0.8)
+    with pytest.raises(SystemExit) as e:
+        run_mod.main(["--live", "--db", db])
+    out = capsys.readouterr().out
+    assert e.value.code == 130 and out.rstrip().endswith("by hand") and "GAVE UP" in out
+    kinds = [r["kind"] for r in Store(db).events()]
+    assert kinds.count("flatten_gave_up") == 1

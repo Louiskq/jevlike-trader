@@ -160,6 +160,7 @@ async def dry_run_with_dashboard(
     clock: Callable[[], float] = time.time,
     duration_s: float | None = None,
     on_ready: Callable[[int], None] | None = None,
+    on_trader: Callable[[Trader], None] | None = None,
     linger_s: float | None = 0.0,
     executor=None,
     rss_every_s: float = 60.0,
@@ -195,7 +196,8 @@ async def dry_run_with_dashboard(
     try:
         trader = await dry_run(
             cfg, store, meta, books, model=model, clock=clock, duration_s=duration_s,
-            on_trader=traders.append, executor=executor, rss_every_s=rss_every_s, rss=rss,
+            on_trader=_both(traders.append, on_trader), executor=executor,
+            rss_every_s=rss_every_s, rss=rss,
         )
         if trader.kill_reason and not server_task.done():
             await asyncio.wait({server_task}, timeout=linger_s)
@@ -203,6 +205,15 @@ async def dry_run_with_dashboard(
         server.should_exit = True
         await server_task
     return trader
+
+
+def _both(first: Callable, second: Callable | None) -> Callable:
+    def call(x) -> None:
+        first(x)
+        if second is not None:
+            second(x)
+
+    return call
 
 
 def _f(x: float | None, nd: int = 4) -> str:
@@ -259,16 +270,6 @@ GAVE_UP = ("FLATTEN GAVE UP: the position may still be open on the exchange, "
            "close it by hand")
 
 
-def interrupted_report(store: Store, exchange: Exchange, now: float) -> str:
-    """Printed when a second Ctrl-C cut the shutdown short: the flatten may not have finished."""
-    try:
-        pos = f"exchange position {exchange.position()} {exchange.coin}"
-    except Exception as e:  # never hide the rest of the report
-        pos = f"exchange position UNKNOWN ({type(e).__name__})"
-    store.log_event(now, "flatten_gave_up", "interrupted by a second Ctrl-C")
-    return f"interrupted: flatten cut short; {pos}\n{GAVE_UP}"
-
-
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seconds", type=float, default=None, help="stop after this long")
@@ -304,6 +305,8 @@ def main(argv: list[str] | None = None) -> None:
 
     model = build_model(cfg)
 
+    traders: list[Trader] = []
+
     async def go() -> Trader:
         if args.dashboard:
             def announce(port: int) -> None:  # only once the server is really listening
@@ -312,20 +315,24 @@ def main(argv: list[str] | None = None) -> None:
             return await dry_run_with_dashboard(
                 cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
-                executor=exchange, model=model,
+                on_trader=traders.append, executor=exchange, model=model,
             )
         return await dry_run(
             cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
-            duration_s=args.seconds, executor=exchange, model=model,
+            duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
         )
 
     try:
         trader = asyncio.run(go())
     except DashboardStartError as e:
         raise SystemExit(f"error: {e}") from None
-    except KeyboardInterrupt:  # a second Ctrl-C: it aborts a flatten that is still retrying
-        if exchange is not None:
-            print(interrupted_report(store, exchange, time.time()), flush=True)
+    except KeyboardInterrupt:
+        # Ctrl-C ends the run with a normal shutdown (the flatten finishes), and asyncio.run
+        # then raises this. The report ends with GAVE UP only if the trader says its flatten
+        # was cut short (a second Ctrl-C), whatever the exception type.
+        trader = traders[0] if traders else None
+        if trader is not None:
+            print(format_report(store, trader, exchange), flush=True)
         raise SystemExit(130) from None
     print(format_report(store, trader, exchange))
 
