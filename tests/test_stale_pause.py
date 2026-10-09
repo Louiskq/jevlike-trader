@@ -287,7 +287,7 @@ def test_a_flatten_still_retrying_blocks_resume_even_when_the_books_have_settled
         clock.t += 5
         await tr.on_book(mkbook(recv_ts=clock.t))
 
-    run(scenario())
+    run(asyncio.wait_for(scenario(), 5))  # a resume that ignores the running flatten deadlocks
     assert not tr.paused and tr.stale_resumes == 1
     assert len(events(store, "flatten_recovered")) == 1  # it finished first, then we resumed
 
@@ -300,7 +300,11 @@ def test_resume_checks_the_exchange_position_is_flat_and_closes_a_leftover():
     assert tr.paused and len(events(store, "stale_resume_blocked")) == 1
     assert fake.position == pytest.approx(0.0, abs=1e-12)  # closed, reduce-only
     assert order_calls(fake)[-1][6] is True
-    books(tr, clock, T0 + 85, 13)
+    books(tr, clock, T0 + 85, 1)
+    assert tr.paused  # a fresh settling period, not an instant resume
+    books(tr, clock, T0 + 90, 10)  # to T0+135: 55 s since the restart at T0+80
+    assert tr.paused
+    books(tr, clock, T0 + 140, 1)
     assert not tr.paused
 
 
@@ -343,9 +347,10 @@ def test_an_entry_waiting_for_the_exchange_is_skipped_if_the_bot_pauses_meanwhil
 
     async def scenario():
         await tr._lock.acquire()  # the exchange is busy
-        t = asyncio.create_task(tr.on_book(mkbook(recv_ts=T0)))
+        # the book is newer than the clock, so it is still fresh when the pause starts
+        t = asyncio.create_task(tr.on_book(mkbook(recv_ts=T0 + 10)))
         await asyncio.sleep(0.1)  # the model has answered; the entry waits for the lock
-        clock.t = T0 + 20
+        clock.t = T0 + STALL
         pausing = asyncio.create_task(tr.check_stale())  # its flatten queues behind the entry
         await asyncio.sleep(0.05)
         assert tr.paused
@@ -390,3 +395,111 @@ def test_the_pause_flag_is_set_before_the_flatten_starts():
     clock.t = T0 + STALL
     run(tr.check_stale())
     assert seen == [(True, False)]
+
+
+# ---- gaps found by break-it ----
+
+
+def test_every_pause_gets_its_own_flatten_retry_window():
+    """The first pause's retry sequence gave up; a later pause must still retry, not make a
+    single attempt because the earlier sequence was spent."""
+    delays = []
+    cfg = Config(flatten_retry_window_s=100, resume_after_s=0)
+    tr, store, clock, fake, model = make_live(cfg=cfg, flatten_tries=1, delays=delays)
+    model.p = 0.5  # no entries: only the setup position matters
+    fake._record(7, "BTC", True, 0.001, 65001.0)
+    tr._last_poll = T0 - 100  # book it
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(400)  # unreachable for the whole first pause
+    clock.t = T0 + STALL
+    run(tr.check_stale())
+    assert tr.flatten_unresolved and len(delays) >= 3
+    fake.fail_state = []
+    books(tr, clock, T0 + 200, 2)  # recovers and resumes at once (resume_after_s=0)
+    assert not tr.paused and not tr.flatten_unresolved
+    delays.clear()
+    fake._record(8, "BTC", True, 0.001, 65001.0)
+    tr._last_poll = 0
+    run(tr.on_book(mkbook(recv_ts=clock.t + 1)))
+    fake.fail_state = down(4)
+    clock.t += 1 + STALL
+    run(tr.check_stale())
+    assert delays == [1, 2]  # retried (and recovered), a fresh window
+    assert not tr.flatten_unresolved
+
+
+def test_two_books_settling_at_once_make_one_resume_check():
+    tr, store, clock, fake, _ = make_live(cfg=Config(resume_after_s=0))
+    stall(tr, clock)
+    reads = []
+    real = tr._executor.position
+
+    def slow_position():
+        import time
+
+        reads.append(1)
+        time.sleep(0.1)
+        return real()
+
+    tr._executor.position = slow_position
+
+    async def scenario():
+        clock.t = T0 + 20
+        await asyncio.gather(tr.on_book(mkbook(recv_ts=T0 + 20)),
+                             tr.on_book(mkbook(recv_ts=T0 + 21)))
+
+    run(scenario())
+    assert len(reads) == 1 and tr.stale_resumes == 1
+
+
+def test_a_stop_while_the_resume_check_reads_the_exchange_cancels_the_resume():
+    tr, store, clock, fake, _ = make_live(cfg=Config(resume_after_s=0))
+    stall(tr, clock)
+    real = tr._executor.position
+
+    def stopping_position():
+        tr.stopped = True  # e.g. Ctrl-C while the position read is in flight
+        return real()
+
+    tr._executor.position = stopping_position
+    books(tr, clock, T0 + 20, 1)
+    assert tr.stopped and tr.stale_resumes == 0 and events(store, "stale_resume") == []
+
+
+def test_a_failed_position_read_blocks_the_resume():
+    tr, store, clock, fake, _ = make_live(cfg=Config(resume_after_s=0))
+    stall(tr, clock)
+
+    def boom():
+        raise ConnectionError("dns")
+
+    tr._executor.position = boom
+    books(tr, clock, T0 + 20, 1)
+    assert tr.paused and len(events(store, "sync_error")) >= 1
+
+
+def test_a_ledger_that_is_not_flat_blocks_the_resume_for_the_paper_executor_too():
+    tr, store, clock, _ = make_paper()
+    stall(tr, clock)
+    tr.ledger.apply_fill("buy", 0.001, 65000.0, 0.0)  # the ledger believes it holds some
+    books(tr, clock, T0 + 20, 13)
+    assert tr.paused and len(events(store, "stale_resume_blocked")) == 1
+    assert tr.ledger.position == 0.0  # flattened again
+
+
+def test_a_flatten_that_fails_again_at_resume_time_keeps_the_bot_paused():
+    """Even if the exchange then reads flat: an unresolved flatten is a failure to be sure."""
+    tr, store, clock, fake, model = make_live(
+        cfg=Config(flatten_retry_window_s=0), flatten_tries=1)
+    model.p = 0.5  # nothing is ever opened: the exchange reads flat throughout
+    fake.fail_state = down(2)
+    stall(tr, clock)
+    assert tr.paused and tr.flatten_unresolved
+    fake.fail_state = down(2)  # the venue is still down for the flatten, then reads fine
+    books(tr, clock, T0 + 20, 13)  # settled: one more flatten attempt, which fails
+    assert tr.paused and tr.flatten_unresolved and events(store, "stale_resume") == []
+    books(tr, clock, T0 + 85, 1)  # the settling period restarted
+    assert tr.paused
+    fake.fail_state = []
+    books(tr, clock, T0 + 90, 13)  # settled again: the flatten works, then it resumes
+    assert not tr.paused and not tr.flatten_unresolved

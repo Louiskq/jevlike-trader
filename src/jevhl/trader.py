@@ -503,7 +503,6 @@ class Trader:
         place nothing until _settle finds the feed healthy again. Flags first, before any
         await, so nothing starts in between."""
         self._paused = True
-        self._ok_since = None
         self.stale_pauses += 1
         self._kill.clear_stale()
         self._retry_spent = False  # each pause gets its own flatten retry window
