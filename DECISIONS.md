@@ -105,3 +105,22 @@ Made at the review gate. The user gave no rationale ("no reason").
 - **Fix R1-R4 rather than leave them as nits.** Rationale (user): none given.
 
 Decided by the orchestrator from the user's instructions (not the user's reasoning): the bot runs on the laptop and reaches the model through an SSH tunnel ("wherever latency is low"); the prompt in `src/jevhl/prompt.py` is the assistant's draft and the user has not edited it yet.
+
+## M6 / PR #13: decisions
+
+Made at the review gate. The user gave no rationale ("no reason").
+
+- **Fix R1-R4 (false GAVE UP on one Ctrl-C, `--seconds` cutting the retry short, a second Ctrl-C taking tens of seconds, nothing printed during a retry); document R5 (the window bounds when an attempt may start, so the end can overrun by about 43 s).** Chosen: fix R1-R4, document R5 (alternatives: fix R1 and R2 only; fix all five). Rationale (user): none given.
+- **Accept that a Ctrl-C mid-retry abandons the in-flight network call, which may place a close order the run never books (the next start reads it back from the exchange).** Chosen: accept as is (alternative: an extra position check at exit). Rationale (user): none given.
+
+Decided by the orchestrator when the user said "make the decision for me" (not the user's reasoning): fix the flatten gap before the overnight soak (issue #12) instead of listing it as a limitation, because the soak is unattended.
+
+## M6 / PR #13: caught mistakes
+
+> **M6 / PR #13: one Ctrl-C reported "FLATTEN GAVE UP".** Caught by: reviewer. What: on Python 3.13 the first SIGINT cancels the main task and the cancel becomes a KeyboardInterrupt after a clean shutdown, so every normal stop printed a false give-up, logged a false event and exited 130 without the normal report. Fix: e3e6b22. Prevention: `test_one_ctrl_c_stops_a_live_run_with_the_normal_report_and_no_gave_up`.
+
+> **M6 / PR #13: `--seconds` cut the flatten retry short.** Caught by: reviewer. What: the duration timeout cancelled the watchdog that held the retrying flatten, leaving the position open. Fix: 9a4c307. Prevention: `test_seconds_does_not_cut_a_flatten_retry_short`.
+
+> **M6 / PR #13: a second Ctrl-C waited for a blocked network thread; nothing printed during a retry.** Caught by: reviewer. Fix: c7fbd85 and 70f56d2. Prevention: `test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_be_open`, `test_each_failed_attempt_and_the_outcome_are_printed_to_stderr`.
+
+> **M6 / PR #13: deleting the KeyboardInterrupt handler passed all 547 tests.** Caught by: reviewer (break-it). Fix: 742df0f (tests only). Prevention: the two named SIGINT tests above.

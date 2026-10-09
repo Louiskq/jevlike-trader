@@ -4,9 +4,9 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 5 (Normal mode, branch feat/m5-decider-soak)
-- Next action: reviewer on M5 (draft PR)
-- Waiting on: nothing
+- Current milestone: 6 (flatten retry) PR #13 ready, waiting for merge; M4/M5 live acceptance still open
+- Next action: short-deadline late-hold check, then overnight soak with the real model; then step 6 evidence and step 7 README. Done: UI check of 4 fills, full 1 h live run (hour.db), loss-limit drill, accidental network-loss drill (see log). Still to confirm: .env.example MAX_POSITION_USD=15
+- Waiting on: user merge of PR #13 (M6); then live acceptance (short-deadline check, overnight soak with the real model per docs/soak.md)
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -15,7 +15,8 @@
 | 2 | Live data and dry run | #2 | PR #8 | merged, v0.2 |
 | 3 | Dashboard | #3 | PR #9 | merged, v0.3 |
 | 4 | Testnet live orders | #4 | PR #10 | merged, v0.4; live acceptance pending |
-| 5 | Decider backend and soak | #5 | feat/m5-decider-soak | building |
+| 5 | Decider backend and soak | #5 | PR #11 | merged, v0.5; soak pending |
+| 6 | Flatten retry after network loss | #12 | PR #13 | at merge gate |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -93,3 +94,9 @@
 - 2026-10-08: M5 reviewer done (.pipeline/m5-review.md): 0 must-fix, 4 nits (R1-R4), 4 weak tests, B1/B2(partial)/B4 uncaught. At review gate.
 - 2026-10-08: R1-R4 + break-it tests done (5 commits, 525 tests, verified, pushed f0ca131). User confirmed HTTP contract and chose R1-R4. DECISIONS.md, m5-inline.json, m5-pr-description.md drafted. At PR-description gate.
 - 2026-10-08: PR description approved and applied; inline review posted (5 comments). User: 'no reason' for decisions. Records commit next.
+- 2026-10-08: records pushed (b7a5d1e), CI green, PR #11 ready.
+- 2026-10-08: PR #11 merged (a74244a); main verified (525 tests, ruff clean); v0.5 released; M5 code done, live acceptance pending.
+- 2026-10-08: UI check of 4 live fills passed (sizes, prices, fees match; UI closed P&L is net of fees). 1 h live run (mock model, $15 cap, hour.db): 695 decisions, 0 late, 48 fills, fees $0.223041, reconcile OK (ledger and exchange closedPnl both -$0.0536, position 0). 5 websocket 'Expired' reconnects, ~1.5 s each; 48 skips all rate limit; RSS 62->38 MB.
+- 2026-10-09: loss-limit drill passed (drill.db, MAX_DAILY_LOSS_USD=0.02): kill=daily_loss, flat, reconcile OK (9 fills, fees $0.043794, closedPnl $0.0214 both sides).
+- 2026-10-09: accidental network loss in the first drill (DNS failed ~2 min in): stale_book kill fired, no stale trades, but flatten failed twice and left a 0.00017 BTC short open; bot reported 'position UNKNOWN'. User closed it by hand in the UI. KNOWN LIMIT: no flatten retry after the network returns; note in README, ask user whether to fix. Fresh --db after a manual UI trade makes startup refuse (position differs from ledger): by design, reuse the db.
+- 2026-10-09: M6 (issue #12) built, reviewed (R1-R5), fixed R1-R4, R5 documented; PR #13 ready; decisions recorded (user: no reason; orchestrator decided fix-before-soak at user's request). Waiting for merge.
