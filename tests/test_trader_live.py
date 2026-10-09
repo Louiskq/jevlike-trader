@@ -560,6 +560,36 @@ def test_giving_up_prints_a_final_line_to_stderr(capsys):
     assert "by hand" in err[0]
 
 
+def test_a_drop_right_after_the_close_order_is_placed_is_booked_by_the_final_fill_read():
+    tr, store, clock, fake, _ = make(flatten_tries=1)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    assert tr.ledger.position > 0
+    fake.fail_fills = [ConnectionError("dns")]  # the close fills but its confirmation read fails
+    run(tr.shutdown())
+    assert fake.position == pytest.approx(0.0, abs=1e-12)  # the order went through
+    assert tr.ledger.position == pytest.approx(0.0, abs=1e-12)  # and was still booked
+    assert not tr.flatten_unresolved and not events(store, "flatten_gave_up")
+    assert [r["side"] for r in store.fills()] == ["buy", "sell"]
+
+
+def test_the_window_bounds_when_an_attempt_may_start_not_how_long_it_runs():
+    tr, store, clock, fake, _ = make(
+        cfg=Config(flatten_retry_window_s=10), flatten_tries=1, delays=[]
+    )
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    fake.fail_state = down(10_000)
+    real_user_state = fake.user_state
+
+    def slow_user_state(address, dex=""):
+        clock.t += 20  # one attempt takes longer than the whole window
+        return real_user_state(address, dex)
+
+    fake.user_state = slow_user_state
+    run(tr.shutdown())
+    assert len(events(store, "flatten_failed")) == 1  # no second attempt starts
+    assert tr.flatten_unresolved
+
+
 def test_cancelling_during_a_blocked_attempt_returns_at_once_and_the_thread_is_tracked():
     class Slow(FakeHL):
         def open_orders(self, address, dex=""):
@@ -582,6 +612,58 @@ def test_cancelling_during_a_blocked_attempt_returns_at_once_and_the_thread_is_t
     assert time.monotonic() - t0 < 0.8
     assert len(events(store, "flatten_attempt_abandoned")) == 1
     assert len(tr.abandoned_threads) == 1 and tr.flatten_unresolved
+
+
+def test_cancelling_during_the_final_fill_read_also_returns_at_once():
+    class Slow(FakeHL):
+        armed, reads = False, 0
+
+        def user_fills_by_time(self, address, start_time, end_time=None, aggregate_by_time=False):
+            if self.armed:
+                self.reads += 1
+                if self.reads == 2:  # the 1st confirms the close, the 2nd is the final re-read
+                    time.sleep(1.5)
+            return super().user_fills_by_time(address, start_time, end_time)
+
+    fake = Slow(bids=[[65000.0, 5.0]], asks=[[65001.0, 5.0]], t0_ms=int(T0 * 1000))
+    tr, store, clock, fake, _ = make(fake=fake, flatten_tries=1)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+
+    async def scenario():
+        fake.armed = True
+        t = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.2)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+
+    t0 = time.monotonic()
+    run(scenario())
+    assert time.monotonic() - t0 < 0.8
+
+
+def test_an_abandoned_call_that_finishes_later_does_not_disturb_the_loop():
+    class Slow(FakeHL):
+        def open_orders(self, address, dex=""):
+            time.sleep(0.3)
+            raise TimeoutError("read timeout")
+
+    fake = Slow(bids=[[65000.0, 5.0]], asks=[[65001.0, 5.0]], t0_ms=int(T0 * 1000))
+    tr, store, clock, fake, _ = make(fake=fake, flatten_tries=1)
+    run(tr.on_book(mkbook(recv_ts=T0)))
+    problems: list[dict] = []
+
+    async def scenario():
+        asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: problems.append(ctx))
+        t = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.1)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        await asyncio.sleep(1.2)  # the blocked call ends and reports to a cancelled future
+
+    run(scenario())
+    assert problems == []
 
 
 def test_a_flatten_after_a_spent_retry_is_one_attempt_not_a_second_window():

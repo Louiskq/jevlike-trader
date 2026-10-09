@@ -67,7 +67,10 @@ class Config:
     full_size_p: float = 0.80
     stale_s: float = 15
     max_order_errors: int = 3
-    flatten_retry_window_s: float = 600  # keep retrying a failed live flatten this long; 0 = once
+    # Keep retrying a failed live flatten for this long; 0 = once. The window bounds when an
+    # attempt may START, not when the retry ends: an attempt begun just inside it can overrun
+    # by up to one attempt (about 43 s with the default exchange timeouts and tries).
+    flatten_retry_window_s: float = 600
     model: str = "mock"
     decider_url: str | None = None
     api_key: str | None = field(default=None, repr=False)

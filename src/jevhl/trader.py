@@ -376,7 +376,8 @@ class Trader:
         confirmation that timed out is still booked.
 
         A failed live flatten (network down) is retried with a growing delay for up to
-        cfg.flatten_retry_window_s, each try re-reading the exchange's position and placing
+        cfg.flatten_retry_window_s (it bounds when an attempt may start, so the end can overrun
+        by one attempt, about 43 s), each try re-reading the exchange's position and placing
         only reduce-only closes. The wait is an awaited sleep and the lock is free during it,
         so cancelling the task (a Ctrl-C) ends it at once. One retry sequence per run: a later
         flatten (shutdown after a kill) joins it, or makes a single attempt if it was spent."""

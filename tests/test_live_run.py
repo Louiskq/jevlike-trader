@@ -227,6 +227,15 @@ def _live_main_env(tmp_path, monkeypatch, fake, books):
     return str(tmp_path / "l.db")
 
 
+def _main_after_sigints(db):
+    """run_mod.main(--live) with SIGINTs already scheduled; a KeyboardInterrupt that escapes
+    main (the handler is gone) fails the test instead of aborting the pytest session."""
+    try:
+        run_mod.main(["--live", "--db", db])
+    except KeyboardInterrupt:
+        pytest.fail("KeyboardInterrupt escaped main: Ctrl-C was not turned into a clean exit")
+
+
 def _sigint_at(*delays):
     for d in delays:
         threading.Timer(d, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
@@ -244,7 +253,7 @@ def test_one_ctrl_c_stops_a_live_run_with_the_normal_report_and_no_gave_up(
     db = _live_main_env(tmp_path, monkeypatch, fake, books)
     _sigint_at(0.5)
     with pytest.raises(SystemExit) as e:
-        run_mod.main(["--live", "--db", db])
+        _main_after_sigints(db)
     out = capsys.readouterr().out
     assert e.value.code == 130
     assert "GAVE UP" not in out
@@ -278,7 +287,7 @@ def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_b
     _sigint_at(0.4, 0.8)
     t0 = time.monotonic()
     with pytest.raises(SystemExit) as e:
-        run_mod.main(["--live", "--db", db])
+        _main_after_sigints(db)
     took = time.monotonic() - t0
     out = capsys.readouterr().out
     assert e.value.code == 130 and out.rstrip().endswith("by hand") and "GAVE UP" in out

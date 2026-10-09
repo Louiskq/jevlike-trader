@@ -206,6 +206,14 @@ def test_close_snaps_float_position_residue_to_the_lot():
     assert orders(fake)[0][3] == 0.00016
 
 
+def test_flatten_snaps_the_exchange_position_to_the_lot_before_flooring():
+    ex, fake, _ = make()
+    fake.position = 0.00007 + 0.00009  # 0.00015999999999999999: flooring it would leave a lot
+    ex.flatten(None, 0.0, 1.0)
+    assert orders(fake)[0][3] == 0.00016
+    assert abs(fake.position) < 1e-9
+
+
 def test_close_of_a_flat_or_wrong_way_position_places_nothing():
     ex, fake, _ = make()
     assert ex.close(mkbook(), "sell", 1.0, position=0.0, ts=1.0) == []
