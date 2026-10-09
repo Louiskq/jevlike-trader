@@ -119,11 +119,19 @@ async def dry_run(
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))
     sampler = asyncio.create_task(rss_sampler(store, clock, rss_every_s, rss))
+    run = asyncio.ensure_future(trader.run(books))
     try:
-        await asyncio.wait_for(trader.run(books), duration_s)
+        await asyncio.wait_for(asyncio.shield(run), duration_s)
     except TimeoutError:
-        pass  # duration reached; run()'s cleanup already flattened
+        # Duration reached: ask the trader to stop and let its shutdown finish, including a
+        # flatten that is still retrying (bounded by its own window). Cancelling it here
+        # would give up on a position that may be open.
+        trader.stopped = True
+        await run
     finally:
+        if not run.done():  # cancelled from outside (Ctrl-C): one cancel, as before
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)
         trader.stopped = True
         dog.cancel()
         sampler.cancel()

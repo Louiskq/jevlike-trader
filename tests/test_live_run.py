@@ -11,6 +11,7 @@ import pytest
 
 from fake_hl import FakeHL
 from jevhl import run as run_mod
+from jevhl import trader as trader_mod
 from jevhl.config import Config
 from jevhl.exchange import Exchange
 from jevhl.rounding import AssetMeta
@@ -281,3 +282,25 @@ def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_b
     assert e.value.code == 130 and out.rstrip().endswith("by hand") and "GAVE UP" in out
     kinds = [r["kind"] for r in Store(db).events()]
     assert kinds.count("flatten_gave_up") == 1
+
+
+def test_seconds_does_not_cut_a_flatten_retry_short(monkeypatch):
+    monkeypatch.setattr(trader_mod, "FLATTEN_RETRY_FIRST_S", 0.1)
+    fake, store = venue(t0=time.time()), Store(":memory:")
+    ex = Exchange(fake, fake, ADDR, BTC, "BTC", since_ms=fake.now_ms - 60_000,
+                  sleep=lambda s: None, flatten_tries=1)
+
+    async def books():
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(0.05)
+        fake.fail_state = [ConnectionError("dns")] * 6  # three failed attempts
+        await asyncio.sleep(3600)
+        yield
+
+    # the watchdog kills on the stale book at ~1 s; attempts follow at ~1.0, 1.1, 1.3, 1.7 s
+    cfg = Config(stale_s=0.3, flatten_retry_window_s=600)
+    tr = asyncio.run(dry_run(cfg, store, BTC, books(), model=StubModel(0.9), executor=ex,
+                             duration_s=1.2))
+    kinds = [r["kind"] for r in store.events()]
+    assert "flatten_gave_up" not in kinds and "flatten_recovered" in kinds
+    assert not tr.flatten_unresolved and fake.position == pytest.approx(0.0, abs=1e-12)
