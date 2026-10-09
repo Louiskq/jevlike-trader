@@ -236,7 +236,8 @@ class Exchange:
                     break
                 side = "sell" if pos > 0 else "buy"
                 ref = _finite(self._info.all_mids()[self.coin], "mid")
-                sz = reduce_size(side, abs(pos), pos, self.meta)
+                # snap to a lot first: a float position of 0.0000099999 must not floor to nothing
+                sz = reduce_size(side, round(abs(pos), self.meta.sz_decimals), pos, self.meta)
                 fills += self._place(
                     side, sz, aggressive_price(side, ref, self.meta), reduce_only=True
                 )

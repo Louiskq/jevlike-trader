@@ -67,6 +67,10 @@ class Config:
     full_size_p: float = 0.80
     stale_s: float = 15
     max_order_errors: int = 3
+    # Keep retrying a failed live flatten for this long; 0 = once. The window bounds when an
+    # attempt may START, not when the retry ends: an attempt begun just inside it can overrun
+    # by up to one attempt (about 43 s with the default exchange timeouts and tries).
+    flatten_retry_window_s: float = 600
     model: str = "mock"
     decider_url: str | None = None
     api_key: str | None = field(default=None, repr=False)
@@ -94,6 +98,7 @@ class Config:
             deadline_s=_num(env, "DECIDER_DEADLINE_S", 2.0),
             max_position_usd=_num(env, "MAX_POSITION_USD", 500),
             max_daily_loss_usd=_num(env, "MAX_DAILY_LOSS_USD", 100),
+            flatten_retry_window_s=_num(env, "FLATTEN_RETRY_WINDOW_S", 600),
             api_key=env.get("HL_API_KEY") or None,
             account_address=env.get("HL_ACCOUNT_ADDRESS") or None,
         )
@@ -119,3 +124,5 @@ class Config:
             raise ConfigError("MAX_POSITION_USD must be at least the minimum notional")
         if self.max_daily_loss_usd <= 0:
             raise ConfigError("MAX_DAILY_LOSS_USD must be positive")
+        if not math.isfinite(self.flatten_retry_window_s) or self.flatten_retry_window_s < 0:
+            raise ConfigError("FLATTEN_RETRY_WINDOW_S must be finite and >= 0")

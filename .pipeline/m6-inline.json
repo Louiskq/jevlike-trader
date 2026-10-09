@@ -1,0 +1,12 @@
+{
+ "commit_id": "742df0f21727d2a16fcd4e5d651a7a2251ff37b3",
+ "event": "COMMENT",
+ "body": "Review trail for M6: reviewer findings R1-R5 and break-it gap B5. No user catches at this gate; the user chose to fix R1-R4 and document R5.",
+ "comments": [
+  {"path": "src/jevhl/run.py", "line": 337, "side": "RIGHT", "body": "Caught (reviewer): one Ctrl-C reached this handler and every normal stop printed a false GAVE UP, logged a false event and skipped the normal report. Now decided from the trader's own state. Fixed in e3e6b22."},
+  {"path": "src/jevhl/run.py", "line": 124, "side": "RIGHT", "body": "Caught (reviewer): the duration timeout cancelled the watchdog holding the retrying flatten, leaving the position open. The run now stops and waits for its own flatten. Fixed in 9a4c307."},
+  {"path": "src/jevhl/trader.py", "line": 148, "side": "RIGHT", "body": "Caught (reviewer): a second Ctrl-C waited for a blocked network thread (19-50 s). The flatten attempt now runs where a cancel can abandon it, and the thread is tracked. Fixed in c7fbd85."},
+  {"path": "src/jevhl/trader.py", "line": 431, "side": "RIGHT", "body": "Caught (reviewer): attempts and the outcome were only written to SQLite, so a retry of up to 10 minutes looked hung. Now printed to stderr. Fixed in 70f56d2."},
+  {"path": "src/jevhl/run.py", "line": 337, "side": "RIGHT", "body": "Caught (reviewer, break-it): deleting the KeyboardInterrupt handler passed all 547 tests. Two tests now send real SIGINTs through main. Fixed in 742df0f."}
+ ]
+}

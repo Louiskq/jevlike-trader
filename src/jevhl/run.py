@@ -119,11 +119,19 @@ async def dry_run(
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))
     sampler = asyncio.create_task(rss_sampler(store, clock, rss_every_s, rss))
+    run = asyncio.ensure_future(trader.run(books))
     try:
-        await asyncio.wait_for(trader.run(books), duration_s)
+        await asyncio.wait_for(asyncio.shield(run), duration_s)
     except TimeoutError:
-        pass  # duration reached; run()'s cleanup already flattened
+        # Duration reached: ask the trader to stop and let its shutdown finish, including a
+        # flatten that is still retrying (bounded by its own window). Cancelling it here
+        # would give up on a position that may be open.
+        trader.stopped = True
+        await run
     finally:
+        if not run.done():  # cancelled from outside (Ctrl-C): one cancel, as before
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)
         trader.stopped = True
         dog.cancel()
         sampler.cancel()
@@ -160,6 +168,7 @@ async def dry_run_with_dashboard(
     clock: Callable[[], float] = time.time,
     duration_s: float | None = None,
     on_ready: Callable[[int], None] | None = None,
+    on_trader: Callable[[Trader], None] | None = None,
     linger_s: float | None = 0.0,
     executor=None,
     rss_every_s: float = 60.0,
@@ -195,7 +204,8 @@ async def dry_run_with_dashboard(
     try:
         trader = await dry_run(
             cfg, store, meta, books, model=model, clock=clock, duration_s=duration_s,
-            on_trader=traders.append, executor=executor, rss_every_s=rss_every_s, rss=rss,
+            on_trader=_both(traders.append, on_trader), executor=executor,
+            rss_every_s=rss_every_s, rss=rss,
         )
         if trader.kill_reason and not server_task.done():
             await asyncio.wait({server_task}, timeout=linger_s)
@@ -203,6 +213,15 @@ async def dry_run_with_dashboard(
         server.should_exit = True
         await server_task
     return trader
+
+
+def _both(first: Callable, second: Callable | None) -> Callable:
+    def call(x) -> None:
+        first(x)
+        if second is not None:
+            second(x)
+
+    return call
 
 
 def _f(x: float | None, nd: int = 4) -> str:
@@ -250,7 +269,13 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
             lines.append(f"exchange position {exchange.position()} {exchange.coin} (should be 0)")
         except Exception as e:  # never hide the rest of the report
             lines.append(f"exchange position UNKNOWN ({type(e).__name__}): check it by hand")
+    if trader.flatten_unresolved:
+        lines.append(GAVE_UP)
     return "\n".join(lines)
+
+
+GAVE_UP = ("FLATTEN GAVE UP: the position may still be open on the exchange, "
+           "close it by hand")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -288,6 +313,8 @@ def main(argv: list[str] | None = None) -> None:
 
     model = build_model(cfg)
 
+    traders: list[Trader] = []
+
     async def go() -> Trader:
         if args.dashboard:
             def announce(port: int) -> None:  # only once the server is really listening
@@ -296,17 +323,25 @@ def main(argv: list[str] | None = None) -> None:
             return await dry_run_with_dashboard(
                 cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
-                executor=exchange, model=model,
+                on_trader=traders.append, executor=exchange, model=model,
             )
         return await dry_run(
             cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
-            duration_s=args.seconds, executor=exchange, model=model,
+            duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
         )
 
     try:
         trader = asyncio.run(go())
     except DashboardStartError as e:
         raise SystemExit(f"error: {e}") from None
+    except KeyboardInterrupt:
+        # Ctrl-C ends the run with a normal shutdown (the flatten finishes), and asyncio.run
+        # then raises this. The report ends with GAVE UP only if the trader says its flatten
+        # was cut short (a second Ctrl-C), whatever the exception type.
+        trader = traders[0] if traders else None
+        if trader is not None:
+            print(format_report(store, trader, exchange), flush=True)
+        raise SystemExit(130) from None
     print(format_report(store, trader, exchange))
 
 

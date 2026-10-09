@@ -29,6 +29,7 @@ class FakeHL:
         self.fail_state: list[Exception] = []  # popped one per user_state call
         self.fail_mids: list[Exception] = []
         self.fail_cancel: list[Exception] = []
+        self.fail_fills: list[Exception] = []  # popped one per user_fills_by_time call
         self._avg = 0.0  # average entry price of the open position, for closedPnl
 
     def _tick(self) -> int:
@@ -124,6 +125,8 @@ class FakeHL:
 
     def user_fills_by_time(self, address, start_time, end_time=None, aggregate_by_time=False):
         self.calls.append(("user_fills_by_time", address, start_time))
+        if self.fail_fills:
+            raise self.fail_fills.pop(0)
         out = []
         for f in self.raw_fills:
             if f.get("_hidden_for", 0) > 0:

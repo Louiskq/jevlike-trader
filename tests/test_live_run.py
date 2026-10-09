@@ -2,12 +2,16 @@
 the fake venue. No network, no key."""
 
 import asyncio
+import os
+import signal
+import threading
 import time
 
 import pytest
 
 from fake_hl import FakeHL
 from jevhl import run as run_mod
+from jevhl import trader as trader_mod
 from jevhl.config import Config
 from jevhl.exchange import Exchange
 from jevhl.rounding import AssetMeta
@@ -208,3 +212,107 @@ def test_live_main_prints_the_size_warning_to_stderr_but_still_runs(
     monkeypatch.setenv("MAX_POSITION_USD", "15")
     run_mod.main(["--live", "--db", str(tmp_path / "l2.db"), "--seconds", "1"])
     assert "WARNING" not in capsys.readouterr().err
+
+
+# ---- stopping: Ctrl-C and --seconds while a flatten is (or may be) retrying ----
+
+
+def _live_main_env(tmp_path, monkeypatch, fake, books):
+    _env(monkeypatch)
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
+    monkeypatch.setattr(run_mod, "stream_books", books)
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
+    monkeypatch.setattr(run_mod, "build_exchange",
+                        lambda cfg, meta, since_ms: exch(fake, since=since_ms))
+    return str(tmp_path / "l.db")
+
+
+def _main_after_sigints(db):
+    """run_mod.main(--live) with SIGINTs already scheduled; a KeyboardInterrupt that escapes
+    main (the handler is gone) fails the test instead of aborting the pytest session."""
+    try:
+        run_mod.main(["--live", "--db", db])
+    except KeyboardInterrupt:
+        pytest.fail("KeyboardInterrupt escaped main: Ctrl-C was not turned into a clean exit")
+
+
+def _sigint_at(*delays):
+    for d in delays:
+        threading.Timer(d, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+
+
+def test_one_ctrl_c_stops_a_live_run_with_the_normal_report_and_no_gave_up(
+    tmp_path, monkeypatch, capsys
+):
+    fake = venue(t0=time.time())
+
+    async def books(*a, **k):
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(3600)
+
+    db = _live_main_env(tmp_path, monkeypatch, fake, books)
+    _sigint_at(0.5)
+    with pytest.raises(SystemExit) as e:
+        _main_after_sigints(db)
+    out = capsys.readouterr().out
+    assert e.value.code == 130
+    assert "GAVE UP" not in out
+    assert "decisions 1" in out and "exchange position 0" in out
+    assert fake.position == pytest.approx(0.0, abs=1e-12)
+    kinds = [r["kind"] for r in Store(db).events()]
+    assert "flatten_gave_up" not in kinds
+
+
+def test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_be_open(
+    tmp_path, monkeypatch, capsys
+):
+    class Slow(FakeHL):
+        hang = False
+
+        def open_orders(self, address, dex=""):
+            if self.hang:
+                time.sleep(2)  # an HTTP call running into its timeout
+                raise TimeoutError("read timeout")
+            return super().open_orders(address, dex)
+
+    fake = Slow(bids=[[65000.0, 5.0]], asks=[[65001.0, 5.0]], t0_ms=int(time.time() * 1000))
+
+    async def books(*a, **k):
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(0.1)
+        fake.hang = True
+        await asyncio.sleep(3600)
+
+    db = _live_main_env(tmp_path, monkeypatch, fake, books)
+    _sigint_at(0.4, 0.8)
+    t0 = time.monotonic()
+    with pytest.raises(SystemExit) as e:
+        _main_after_sigints(db)
+    took = time.monotonic() - t0
+    out = capsys.readouterr().out
+    assert e.value.code == 130 and out.rstrip().endswith("by hand") and "GAVE UP" in out
+    assert took < 1.5  # not the 1 s the blocked call still needs after the second Ctrl-C
+    kinds = [r["kind"] for r in Store(db).events()]
+    assert kinds.count("flatten_gave_up") == 1
+
+
+def test_seconds_does_not_cut_a_flatten_retry_short(monkeypatch):
+    monkeypatch.setattr(trader_mod, "FLATTEN_RETRY_FIRST_S", 0.1)
+    fake, store = venue(t0=time.time()), Store(":memory:")
+    ex = Exchange(fake, fake, ADDR, BTC, "BTC", since_ms=fake.now_ms - 60_000,
+                  sleep=lambda s: None, flatten_tries=1)
+
+    async def books():
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(0.05)
+        fake.fail_state = [ConnectionError("dns")] * 6  # three failed attempts
+        await asyncio.sleep(3600)
+        yield
+
+    # the watchdog kills on the stale book at ~1 s; attempts follow at ~1.0, 1.1, 1.3, 1.7 s
+    cfg = Config(stale_s=0.3, flatten_retry_window_s=600)
+    tr = asyncio.run(dry_run(cfg, store, BTC, books(), model=StubModel(0.9), executor=ex,
+                             duration_s=1.2))
+    kinds = [r["kind"] for r in store.events()]
+    assert "flatten_gave_up" not in kinds and "flatten_recovered" in kinds
+    assert not tr.flatten_unresolved and fake.position == pytest.approx(0.0, abs=1e-12)
