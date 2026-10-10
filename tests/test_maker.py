@@ -56,9 +56,13 @@ def make_paper(cfg=MCFG, p=0.9, store=None, model=None):
     clock = Clock()
     store = store or Store(":memory:")
     model = model or StubModel(p=p)
+
+    async def tsleep(d):  # waits (for the action cap) take no real time
+        clock.t += d
+
     tr = MakerTrader(cfg, store, model, PaperExchange(store, BTC, "BTC"),
                      Ledger.from_fills(store.fills()), KillSwitch(cfg, clock, day_start_pnl=0.0),
-                     clock=clock, perf=clock)
+                     clock=clock, perf=clock, sleep=tsleep)
     return tr, store, clock, model
 
 
@@ -549,24 +553,24 @@ def test_actions_capped_at_20_per_rolling_minute():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
     flip(tr, clock, model, 25)  # every decision wants a new quote
-    assert len(quote_actions(fake)) == 19  # one slot of the 20 is kept for a cancel
-    # capped at decisions 20, 22 and 24; 21, 23 and 25 want the buy that still rests
-    assert len(events(store, "action_cap")) == 3
-    assert tr.maker_view()["actions_last_min"] == 19
+    assert len(quote_actions(fake)) == 18  # two of the 20 are kept for a stop's cancel and close
+    # capped at decisions 19, 21, 23 and 25; 20, 22 and 24 want the sell that still rests
+    assert len(events(store, "action_cap")) == 4
+    assert tr.maker_view()["actions_last_min"] == 18
 
 
 def test_action_window_rolls_off_after_60_s():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
-    flip(tr, clock, model, 19)  # T0 .. T0+18: the cap is full; the last quote is a buy
-    model.p = 0.2
-    tick(tr, clock, T0 + 60.0)  # the first action (T0) is exactly 60 s old: out of the window
-    assert len(quote_actions(fake)) == 20
+    flip(tr, clock, model, 18)  # T0 .. T0+17: the quotes' share is full; the last is a sell
     model.p = 0.9
+    tick(tr, clock, T0 + 60.0)  # the first action (T0) is exactly 60 s old: out of the window
+    assert len(quote_actions(fake)) == 19
+    model.p = 0.2
     tick(tr, clock, T0 + 60.37)  # T0+1 is still 59.37 s old: capped
-    assert len(quote_actions(fake)) == 20 and events(store, "action_cap")
+    assert len(quote_actions(fake)) == 19 and events(store, "action_cap")
     tick(tr, clock, T0 + 61.01)
-    assert len(quote_actions(fake)) == 21
+    assert len(quote_actions(fake)) == 20
 
 
 def test_failed_and_rejected_actions_count_towards_the_cap():
@@ -575,7 +579,123 @@ def test_failed_and_rejected_actions_count_towards_the_cap():
     no_polls(tr, clock)
     for i in range(22):
         tick(tr, clock, T0 + i)
-    assert len(calls(fake, "order")) == 19
+    assert len(calls(fake, "order")) == 18
+
+
+def stamp_actions(fake, clock):
+    """Record the clock time of every order, modify and bulk cancel sent to the fake venue."""
+    times = []
+    for name in ("order", "modify_order", "bulk_cancel"):
+        real = getattr(fake, name)
+
+        def sent(*a, _real=real, **k):
+            times.append(clock.t)
+            return _real(*a, **k)
+
+        setattr(fake, name, sent)
+    return times
+
+
+def most_in_a_minute(times):
+    return max((sum(1 for u in times if t - 60 < u <= t) for t in times), default=0)
+
+
+STRAY = {"coin": "BTC", "side": "A", "limitPx": "66000.0", "sz": "0.001", "oid": 77,
+         "timestamp": 1, "origSz": "0.001"}  # an order placed in the UI
+
+
+def flip_from(tr, clock, model, first, last):
+    """One decision a second from T0+first to T0+last, each on the other side (sell first)."""
+    for i in range(first, last + 1):
+        model.p = 0.2 if i % 2 else 0.9
+        tick(tr, clock, T0 + i)
+
+
+def test_a_full_window_then_a_stray_and_a_stop_with_a_position_stay_within_20_a_minute():
+    tr, store, clock, fake, model = make_live()
+    times = stamp_actions(fake, clock)
+    no_polls(tr, clock)
+    tick(tr, clock, T0)
+    fake.taker_hits(1000, 0.00005)  # a position for the stop to close
+    flip_from(tr, clock, model, 1, 16)  # 17 quote actions
+    fake.fail_modify = [HTTP429()]
+    model.p = 0.2
+    tick(tr, clock, T0 + 17)  # the 18th is refused; the rate-limit cancel is the 19th
+    assert len(times) == 19 and fake.resting == []
+    fake.resting.append(dict(STRAY))
+    tr._last_reconcile = 0.0
+    tick(tr, clock, T0 + 18)  # only the stop's slots are left: the stray waits
+    assert any(o["oid"] == 77 for o in fake.resting)
+    run(tr.shutdown())  # the stop cancel is the 20th; the close waits for T0 to leave
+    assert most_in_a_minute(times) <= 20 and len(times) == 21
+    assert times[-1] >= T0 + 60
+    assert fake.resting == [] and fake.position == pytest.approx(0.0, abs=1e-12)
+
+
+def test_a_stray_cancel_waits_while_only_the_stop_slots_are_free():
+    tr, store, clock, fake, model = make_live()
+    no_polls(tr, clock)
+    flip(tr, clock, model, 18)  # T0 .. T0+17: 18 quote actions, all quotes may use
+    fake.resting.append(dict(STRAY))
+    tr._last_reconcile = 0.0
+    tick(tr, clock, T0 + 18)
+    assert any(o["oid"] == 77 for o in fake.resting) and "77" in events(store, "action_cap")[-1]
+    tr._last_reconcile = 0.0
+    tick(tr, clock, T0 + 60.5)  # T0's action has left the window: room again
+    assert all(o["oid"] != 77 for o in fake.resting) and events(store, "stray_order")
+
+
+def test_a_stop_after_a_full_quoting_minute_cancels_and_closes_at_once():
+    """Quotes leave two slots, so a normal stop (a cancel and a close) never waits."""
+    tr, store, clock, fake, model = make_live()
+    times = stamp_actions(fake, clock)
+    no_polls(tr, clock)
+    tick(tr, clock, T0)
+    fake.taker_hits(1000, 0.00005)
+    flip_from(tr, clock, model, 1, 18)  # 17 more quotes, then one capped
+    assert len(times) == 18 and events(store, "action_cap")
+    run(tr.shutdown())
+    assert len(times) == 20 and times[-1] == T0 + 18  # no wait
+    assert most_in_a_minute(times) == 20
+    assert fake.resting == [] and fake.position == pytest.approx(0.0, abs=1e-12)
+
+
+def test_a_paper_close_counts_against_the_cap_too():
+    tr, store, clock, _ = make_paper()
+    tick(tr, clock, T0)  # buy quote at 65001
+    tr.tape.add([Print(T0 + 0.5, T0 + 0.5, "sell", 65000.0, 0.00005, 1)], T0 + 0.5)
+    tick(tr, clock, T0 + 1)  # partly filled: a position, and the rest still rests
+    assert tr.ledger.position == pytest.approx(0.00005)
+    tr._actions = [T0] * 19
+    run(tr.shutdown())  # the cancel is the 20th, so the close waits for the window
+    assert clock.t >= T0 + 60 and abs(tr.ledger.position) < 1e-9
+    assert any("waits" in e for e in events(store, "action_cap"))
+
+
+def test_a_stop_with_nothing_resting_sends_no_cancel_and_does_not_wait():
+    tr, store, clock, _ = make_paper()
+    tr._actions = [T0] * 20
+    clock.t = T0 + 1
+    run(tr.shutdown())  # flat, no quote: nothing to send, so nothing to wait for
+    assert clock.t == T0 + 1 and events(store, "quote_cancel") == ["stop: 0 order(s)"]
+
+
+def test_a_ctrl_c_while_the_stop_cancel_waits_for_the_cap_reports_gave_up():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    tr._actions = [clock.t] * 20  # full, as after earlier stop orders this minute
+
+    async def scenario():
+        tr._sleep = lambda d: asyncio.Event().wait()  # the wait only ends by a cancel
+        t = asyncio.create_task(tr.shutdown())
+        await asyncio.sleep(0.05)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+
+    run(scenario())
+    assert tr.flatten_unresolved and events(store, "flatten_gave_up")
+    assert fake.resting  # nothing was sent: the report must say so
 
 
 def test_rate_limit_error_cancels_and_pauses_quoting():

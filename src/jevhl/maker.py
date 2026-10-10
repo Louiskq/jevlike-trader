@@ -11,10 +11,12 @@ unknown they are re-read first; a book still without a market view is not used a
 
 Shared with the taker (inherited from Trader): the loop, outcomes, fill booking (idempotent
 on tid), the kill switch, the M6 flatten retry and the M7 stale pause. The maker adds:
-- every stop (stale pause, kill, shutdown) cancels all resting orders first, never blocked by
-  the action cap;
-- at most MAKER_ACTIONS_PER_MIN order actions in any 60 s (SPEC hard constraint), one slot kept
-  for an emergency cancel;
+- every stop (stale pause, kill, shutdown) cancels all resting orders first;
+- at most MAKER_ACTIONS_PER_MIN order actions in any 60 s (SPEC hard constraint), counting
+  quotes, stray cancels, stop and rate-limit cancels and flatten closes. Quotes and stray
+  cancels leave two slots free (a stop's cancel and close); a stop or rate-limit order is never
+  dropped, but waits for a slot if the window is full (see _flatten_once for the one bounded
+  exception);
 - a rate-limit error cancels, counts as an order error and pauses quoting for RATE_PAUSE_S;
 - live, fills are polled every MAKER_FILL_POLL_S and the open orders re-read every
   ORDERS_RECONCILE_S (a modify's reply is unverified: after an unclear answer the quote is
@@ -26,6 +28,7 @@ No time exits: the position is reduced by quoting the other side.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import deque
 from collections.abc import AsyncIterator
@@ -50,6 +53,7 @@ from .trader import Trader
 from .types import HORIZONS_S, Action, Decision, MakerInput, ModelInput, QuoteAck
 
 MAKER_ACTIONS_PER_MIN = 20  # SPEC hard constraint, not configurable
+STOP_RESERVE = 2  # slots quotes and stray cancels leave free: a stop's cancel and its close
 ACTION_WINDOW_S = 60.0
 MAKER_BOOK_MAX_AGE_S = 3.0  # never send a quote priced on an older book
 MAKER_FILL_POLL_S = 5.0  # live: read the exchange's fills this often
@@ -367,14 +371,28 @@ class MakerTrader(Trader):
 
     # ---- the action cap and rate limits ----
 
-    def _room(self) -> bool:
-        """A quote action fits in the last 60 s with one slot kept for an emergency cancel."""
+    def _in_window(self) -> int:
         now = self._clock()
         self._actions = [t for t in self._actions if t > now - ACTION_WINDOW_S]
-        return len(self._actions) + 1 <= MAKER_ACTIONS_PER_MIN - 1
+        return len(self._actions)
+
+    def _room(self) -> bool:
+        """A quote or stray cancel fits in the last 60 s with STOP_RESERVE slots kept free."""
+        return self._in_window() + 1 <= MAKER_ACTIONS_PER_MIN - STOP_RESERVE
 
     def _note_action(self) -> None:
         self._actions.append(self._clock())
+
+    async def _take_slot(self) -> None:
+        """Count a cancel or close that must not be dropped (a stop, a rate limit). If the
+        window is already full it waits until the oldest action is 60 s old, so the cap holds
+        even then; STOP_RESERVE makes that wait rare."""
+        while self._in_window() >= MAKER_ACTIONS_PER_MIN:
+            wait = min(self._actions) + ACTION_WINDOW_S - self._clock()
+            self.store.log_event(self._clock(), "action_cap",
+                                 f"stop order waits {wait:.1f} s to stay within the cap")
+            await self._sleep(wait)
+        self._note_action()
 
     async def _rate_limited_locked(self, e: Exception) -> None:
         """Rate limited: count it as an order error (three in a row stop the bot), cancel the
@@ -386,17 +404,20 @@ class MakerTrader(Trader):
         await self._cancel_all_locked("rate limit")
 
     async def _cancel_all_locked(self, why: str) -> None:
-        """Cancel every resting order on the coin (caller holds the lock). Counted, but never
-        blocked by the action cap."""
-        self._note_action()
+        """Cancel every resting order on the coin (caller holds the lock). The orders are read
+        first, so a cancel is sent, and counted, only when something rests; it is never
+        dropped by the action cap (see _take_slot)."""
         try:
-            n = await self._run(self._executor.cancel_all)
+            oids = [o.oid for o in await self._run(self._executor.open_quotes)]
+            if oids:
+                await self._take_slot()
+                await self._run(self._executor.cancel_oids, oids)
         except Exception as e:
             self._quote = UNKNOWN
             self.store.log_event(self._clock(), "cancel_error", f"{why}: {type(e).__name__}: {e}")
             return
         self._quote = None
-        self.store.log_event(self._clock(), "quote_cancel", f"{why}: {n} order(s)")
+        self.store.log_event(self._clock(), "quote_cancel", f"{why}: {len(oids)} order(s)")
 
     # ---- live fills and open orders ----
 
@@ -453,6 +474,10 @@ class MakerTrader(Trader):
             mine = orders[0]
         strays = [o.oid for o in orders if o is not mine]
         if strays:
+            if not self._room():  # tried again at the next check; the stop's slots stay free
+                self.store.log_event(self._clock(), "action_cap",
+                                     f"stray orders {strays} not cancelled yet")
+                return
             self._note_action()
             try:
                 await self._run(self._executor.cancel_oids, strays)
@@ -478,10 +503,27 @@ class MakerTrader(Trader):
         """Cancel every resting order first, then close as the taker does (live, each flatten
         attempt cancels again). Paper needs the cancel here: its flatten does nothing when the
         ledger is flat."""
-        async with self._lock:
-            await self._cancel_all_locked("stop")
+        try:
+            async with self._lock:
+                await self._cancel_all_locked("stop")
+        except asyncio.CancelledError:  # a Ctrl-C during the cancel (or its wait for the cap)
+            if self._executor.live:
+                self._give_up("interrupted before the cancel")
+            raise
         await super()._flatten()
         self._quote = UNKNOWN if self.flatten_unresolved else None
+
+    async def _flatten_once(self, attempt: int) -> str | None:
+        """Each flatten attempt counts as one order action, its close (live always: the
+        exchange's position may be ahead of the ledger), waiting if the window is full.
+        Not counted, the bounded exception to the cap: when a close errors or leaves the
+        position open, Exchange.flatten tries again inside the same attempt (at most 3 closes
+        and 4 cancel-alls, a cancel only if an order rests). That needs the venue to refuse
+        or not fill a reduce-only IOC; the attempts themselves are counted and spaced by the
+        retry backoff (1, 2, 4, ... 30 s)."""
+        if self._executor.live or abs(self.ledger.position) >= self._dust:
+            await self._take_slot()
+        return await super()._flatten_once(attempt)
 
     async def _is_flat(self) -> bool:
         """A resume also needs no order resting on the coin."""
