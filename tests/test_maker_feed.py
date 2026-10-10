@@ -257,9 +257,10 @@ def test_stream_trades_pings_when_quiet_and_drops_a_dead_socket():
     ws1 = FakeWS(["TIMEOUT"])  # silent, never answers the ping
     ws2 = FakeWS([json.dumps(LIVE)])
     events = []
-    batches = run(take(stream_trades("BTC", lambda: 1.0, connect=make_connect([ws1, ws2]),
-                                     sleep=no_sleep, ping_s=0.01, dead_s=0.01,
-                                     on_event=lambda k, d: events.append(k)), 1))
+    batches = run(asyncio.wait_for(  # bounded: a socket never dropped fails, not hangs
+        take(stream_trades("BTC", lambda: 1.0, connect=make_connect([ws1, ws2]),
+                           sleep=no_sleep, ping_s=0.01, dead_s=0.01,
+                           on_event=lambda k, d: events.append(k)), 1), 5))
     assert {"method": "ping"} in ws1.sent
     assert "trades_disconnect" in events and len(batches) == 1
 

@@ -789,3 +789,34 @@ def test_decision_and_outcome_mids_exclude_our_own_quote():
     tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)
     (o30,) = store.outcomes(first["id"])
     assert o30["mid_future"] == 65001.5 and o30["label"] is None  # unchanged market: a tie
+
+
+# ---- gaps found by break-it checks ----
+
+
+def test_paper_stop_cancel_is_never_blocked_by_the_cap():
+    """Paper has no venue-side cancel in its flatten, so only the maker's own stop cancel
+    clears the quote: it must run even with the action window full."""
+    tr, store, clock, _ = make_paper()
+    tick(tr, clock, T0)
+    tr._actions = [clock.t] * 25
+    run(tr.shutdown())
+    assert tr._executor.open_quotes() == [] and events(store, "quote_cancel")
+
+
+def test_a_failed_cancel_of_several_unknown_orders_keeps_the_quote_unknown():
+    tr, store, clock, fake, _ = make_live()
+    tr._executor.place_quote("buy", SZ, 64990, None, 0.0)
+    tr._executor.place_quote("buy", SZ, 64991, None, 0.0)
+    tr._quote = UNKNOWN
+    fake.fail_cancel = [ConnectionError("blip")]
+    tick(tr, clock, T0)  # the open-orders check fails to cancel; the quote re-checks first
+    assert events(store, "cancel_error")
+    assert [o["oid"] for o in fake.resting] == [1002]  # never a new quote beside the strays
+
+
+def test_the_maker_deadline_bounds_the_real_wait_for_the_model():
+    cfg = replace(MCFG, maker_deadline_s=0.1)  # the taker's deadline stays 2 s
+    tr, store, clock, _ = make_paper(cfg=cfg, model=StubModel(p=0.9, real_sleep=0.3))
+    tick(tr, clock, T0)
+    assert store.decisions()[0]["reason"] == "late" and tr._executor.open_quotes() == []
