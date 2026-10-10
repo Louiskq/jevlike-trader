@@ -117,6 +117,12 @@ class Trader:
         return self._last_book
 
     @property
+    def ended_paused(self) -> bool:
+        """A stale pause was still in force when the bot stopped (a Ctrl-C, the duration, a
+        shutdown), for the end-of-run report. A permanent kill is a kill, not a pause."""
+        return self._paused and self.kill_reason is None
+
+    @property
     def kill_reason(self) -> str | None:
         return self._kill.reason
 

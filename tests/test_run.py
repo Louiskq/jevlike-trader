@@ -488,3 +488,51 @@ def test_report_counts_stale_pauses_and_resumes():
     paused, again = asyncio.run(go())
     assert "stale pauses 1  resumes 0  (paused at the end)" in paused
     assert "stale pauses 2  resumes 1  (paused at the end)" in again
+
+
+def test_report_says_paused_at_the_end_after_a_run_stopped_while_paused():
+    clock = Clock()
+
+    async def go():
+        tr, cfg = _trader(clock)
+        await tr.on_book(replace(REAL[0], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        await tr.shutdown()  # what Trader.run's finally does when the run ends
+        return tr, format_report(tr.store, tr), trader_live(tr, clock)()
+
+    tr, text, live = asyncio.run(go())
+    assert tr.stopped and "(paused at the end)" in text
+
+
+def test_trader_live_shows_a_bot_stopped_while_paused_as_stopped_not_paused():
+    clock = Clock()
+
+    async def go():
+        tr, cfg = _trader(clock)
+        await tr.on_book(replace(REAL[0], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        await tr.shutdown()
+        return trader_live(tr, clock)()
+
+    live = asyncio.run(go())
+    assert live["stopped"] is True and live["paused"] is False
+
+
+def test_a_permanent_kill_while_paused_is_not_reported_as_paused_at_the_end():
+    clock = Clock()
+
+    async def go():
+        tr, cfg = _trader(clock, max_daily_loss_usd=10)
+        await tr.on_book(replace(REAL[0], recv_ts=clock.t))
+        clock.t += cfg.stale_s + 1
+        await tr.check_stale()
+        assert tr.paused
+        tr.ledger.apply_fill("buy", 0.001, 65000.0, 50.0)  # a big loss is booked meanwhile
+        clock.t += 1
+        await tr.on_book(replace(REAL[1], recv_ts=clock.t))
+        assert tr.stopped and tr.kill_reason == "daily_loss"
+        return format_report(tr.store, tr)
+
+    assert "(paused at the end)" not in asyncio.run(go())

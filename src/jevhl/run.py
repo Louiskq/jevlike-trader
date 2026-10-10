@@ -270,7 +270,7 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
     lines.append(f"events {ev}  fills {len(store.fills())}  fees ${trader.ledger.fees:.4f}")
     lines.extend(format_soak(soak_report(store)))
     lines.append(f"stale pauses {trader.stale_pauses}  resumes {trader.stale_resumes}"
-                 + ("  (paused at the end)" if trader.paused else ""))
+                 + ("  (paused at the end)" if trader.ended_paused else ""))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
     if exchange is not None:
         try:
