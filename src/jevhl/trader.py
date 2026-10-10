@@ -522,15 +522,15 @@ class Trader:
                   f"{self.cfg.resume_after_s:g} s of steady books")
         await self._flatten()
 
-    async def _settle(self, book: Book, prev: Book | None) -> None:
-        """While paused, one call per book. Steady means no gap between books over
-        resume_max_gap_s; a gap restarts the clock. Once steady for resume_after_s, resume,
-        but never while a flatten is running or unresolved, and only if the exchange (live) and
-        the ledger are flat. Anything not flat gets one more flatten and a fresh settling
+    async def _settle(self, book: Book, prev: Book) -> None:
+        """While paused, one call per book (prev is the book before it: a pause needs one, see
+        test_a_stale_pause_is_impossible_before_the_first_book). Steady means no gap between
+        books over resume_max_gap_s; a gap restarts the clock. Once steady for resume_after_s,
+        resume, but never while a flatten is running or unresolved, and only if the exchange
+        (live) and the ledger are flat. Anything not flat gets one more flatten and a fresh settling
         period."""
         cfg = self.cfg
-        if (self._ok_since is None or prev is None
-                or book.recv_ts - prev.recv_ts > cfg.resume_max_gap_s):
+        if self._ok_since is None or book.recv_ts - prev.recv_ts > cfg.resume_max_gap_s:
             self._ok_since = book.recv_ts
         if book.recv_ts - self._ok_since < cfg.resume_after_s:
             return
