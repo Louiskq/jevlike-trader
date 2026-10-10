@@ -201,7 +201,7 @@ def test_daily_loss_flattens_through_the_exchange():
 
 
 def test_stale_book_watchdog_flattens_the_exchange_position():
-    tr, store, clock, fake, _ = make()
+    tr, store, clock, fake, _ = make(cfg=Config(stale_resumes_max=0))
     run(tr.on_book(mkbook(recv_ts=T0)))
     clock.t = T0 + 15.01
     assert run(tr.check_stale()) == "stale_book"
@@ -384,7 +384,7 @@ def test_a_successful_exit_resets_the_consecutive_order_error_count():  # B3
 
 
 def test_the_stop_flag_is_set_before_the_flatten_starts():
-    tr, store, clock, fake, _ = make()
+    tr, store, clock, fake, _ = make(cfg=Config(stale_resumes_max=0))
     run(tr.on_book(mkbook(recv_ts=T0)))
     seen = []
     real = tr._executor.flatten

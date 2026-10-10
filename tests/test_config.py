@@ -114,3 +114,56 @@ def test_bad_flatten_retry_window_is_rejected(raw):
 def test_validate_rejects_bad_flatten_window_set_directly(v):
     with pytest.raises(ConfigError):
         Config(flatten_retry_window_s=v).validate()
+
+
+# ---- M7: feed liveness and stale-pause recovery ----
+
+
+def test_recovery_defaults_and_env():
+    c = Config.from_env({})
+    assert (c.feed_ping_s, c.feed_dead_s) == (4.0, 6.0)
+    assert (c.resume_after_s, c.stale_resumes_max, c.resume_max_gap_s) == (60.0, 5, 8.0)
+    c = Config.from_env({"FEED_PING_S": "2.5", "FEED_DEAD_S": "3", "RESUME_AFTER_S": "0",
+                         "STALE_RESUMES_MAX": "0", "RESUME_MAX_GAP_S": "7.5"})
+    assert (c.feed_ping_s, c.feed_dead_s, c.resume_after_s) == (2.5, 3.0, 0.0)
+    assert (c.stale_resumes_max, c.resume_max_gap_s) == (0, 7.5)
+
+
+@pytest.mark.parametrize("name", ["FEED_PING_S", "FEED_DEAD_S", "RESUME_MAX_GAP_S"])
+@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf", "abc"])
+def test_bad_positive_recovery_settings_are_rejected(name, raw):
+    with pytest.raises(ConfigError):
+        Config.from_env({name: raw})
+
+
+@pytest.mark.parametrize("raw", ["-1", "-0.01", "nan", "inf", "abc"])
+def test_bad_resume_after_is_rejected(raw):
+    with pytest.raises(ConfigError):
+        Config.from_env({"RESUME_AFTER_S": raw})
+
+
+@pytest.mark.parametrize("raw", ["-1", "1.5", "nan", "inf", "abc"])
+def test_bad_stale_resumes_max_is_rejected(raw):
+    with pytest.raises(ConfigError):
+        Config.from_env({"STALE_RESUMES_MAX": raw})
+
+
+def test_ping_plus_dead_must_be_below_stale_s():
+    with pytest.raises(ConfigError):
+        Config.from_env({"FEED_PING_S": "9", "FEED_DEAD_S": "6"})  # 15 is not below 15
+    Config.from_env({"FEED_PING_S": "8.9", "FEED_DEAD_S": "6"})
+
+
+def test_resume_gap_must_be_below_stale_s():
+    with pytest.raises(ConfigError):
+        Config.from_env({"RESUME_MAX_GAP_S": "15"})
+    Config.from_env({"RESUME_MAX_GAP_S": "14.9"})
+
+
+@pytest.mark.parametrize(
+    "field", ["feed_ping_s", "feed_dead_s", "resume_max_gap_s", "resume_after_s"]
+)
+def test_validate_rejects_nonfinite_recovery_settings_set_directly(field):
+    for v in (float("nan"), float("inf")):
+        with pytest.raises(ConfigError):
+            Config(**{field: v}).validate()

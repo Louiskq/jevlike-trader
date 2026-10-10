@@ -1,0 +1,11 @@
+{
+ "commit_id": "434d1939cab3b66f147903a9296dee7ee60850f9",
+ "event": "COMMENT",
+ "body": "Review trail for M7: reviewer findings R1-R4 and break-it gaps B1, B4. No user catches at this gate; the user chose to fix R1, R2 and R4; R3 fixed in the records commit.",
+ "comments": [
+  {"path": "src/jevhl/feed.py", "line": 134, "side": "RIGHT", "body": "Caught (reviewer): any message, a pong included, reset the dead timer, so a socket that answered pings but sent no books was never dropped and the bot would stay paused forever. A book must now arrive within ping + dead seconds. Fixed in 249bde6."},
+  {"path": "src/jevhl/run.py", "line": 273, "side": "RIGHT", "body": "Caught (reviewer): this note could never print, because the trader is always stopped by the time the report runs. Now reads ended_paused. Fixed in 2b47648."},
+  {"path": "src/jevhl/trader.py", "line": 413, "side": "RIGHT", "body": "Caught (reviewer): the docstring said one retry sequence per run; each pause now gets its own window. Fixed in 54d62d3."},
+  {"path": "src/jevhl/run.py", "line": 159, "side": "RIGHT", "body": "Caught (reviewer, break-it): using the raw paused flag here passed every test, and would show a stopped bot as PAUSED. Test added in f441b58."}
+ ]
+}

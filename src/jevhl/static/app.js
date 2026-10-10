@@ -47,7 +47,8 @@
     var feed = sm.feed;
     chip("chip-feed", "feed: " + feed, feed === "live" ? "good" : feed === "waiting" ? "warn" : "bad");
     var k = sm.kill;
-    var text = "kill switch: " + (k.state === "tripped" ? "TRIPPED (" + k.reason + ")" : k.state);
+    var text = "kill switch: " + (k.state === "tripped" ? "TRIPPED (" + k.reason + ")"
+      : k.state === "paused" ? "PAUSED (" + k.reason + ", resumes when the feed is steady)" : k.state);
     chip("chip-kill", text + (sm.stopped ? ", stopped" : ""),
       k.state === "ok" ? "good" : k.state === "tripped" ? "bad" : "warn");
   }

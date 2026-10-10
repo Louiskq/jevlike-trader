@@ -7,7 +7,8 @@ mid, feed state, kill state) supplied by the running trader. A new stream connec
 with a full snapshot, so a reconnect or a restart reloads history from SQLite.
 
 `live`, if given, is a callable returning
-{"mid": float | None, "feed": str, "kill_reason": str | None, "stopped": bool}.
+{"mid": float | None, "feed": str, "kill_reason": str | None, "stopped": bool,
+"paused": bool}.
 """
 
 from __future__ import annotations
@@ -123,6 +124,8 @@ def build_summary(store: Store, live: dict | None) -> dict:
             if live is None
             else {"state": "tripped", "reason": kill_reason}
             if kill_reason
+            else {"state": "paused", "reason": "stale_book"}
+            if live.get("paused")
             else {"state": "ok", "reason": None}
         ),
     }

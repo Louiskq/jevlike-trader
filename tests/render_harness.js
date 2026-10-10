@@ -39,7 +39,8 @@ function dl(id) { const c = els[id].children; const o = []; for (let i = 0; i < 
 function rows(id) { return els[id]._body.children.map(tr => tr.children.map(td => td.textContent)); }
 function collect() {
   const out = { pnl: dl("pnl"), counts: dl("counts"), decision: dl("decision"), brier: rows("brier"),
-    arcs: {}, notes: {}, texts: {} };
+    arcs: {}, notes: {}, texts: {},
+    kill: [els["chip-kill"].textContent, els["chip-kill"].className] };
   IDS.filter(i => i.startsWith("rel-chart")).forEach(i => {
     out.arcs[i] = els[i].arcs; out.texts[i] = els[i].texts;
   });

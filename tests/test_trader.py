@@ -167,7 +167,7 @@ def test_book_exactly_at_staleness_bound_is_still_fresh():
 
 
 def test_stale_watchdog_trips_kill_switch_and_flattens():
-    tr, store, clock, _ = make()
+    tr, store, clock, _ = make(cfg=Config(stale_resumes_max=0))  # permanent, see test_stale_pause
     run(tr.on_book(mkbook(recv_ts=clock.t)))  # buys
     assert tr.ledger.position > 0
     clock.t += 14.99
@@ -180,7 +180,7 @@ def test_stale_watchdog_trips_kill_switch_and_flattens():
 
 
 def test_no_decisions_after_stop():
-    tr, store, clock, model = make()
+    tr, store, clock, model = make(cfg=Config(stale_resumes_max=0))
     run(tr.on_book(mkbook()))
     clock.t += 20
     run(tr.check_stale())
@@ -404,7 +404,9 @@ def test_run_consumes_books_one_decision_each_and_flattens_at_end():
 
 
 def test_kill_switch_tripping_mid_decision_does_not_trade_and_holds_killed():
-    tr, store, clock, model = make(model=StubModel(p=0.9), perf=time.perf_counter)
+    tr, store, clock, model = make(
+        cfg=Config(stale_resumes_max=0), model=StubModel(p=0.9), perf=time.perf_counter
+    )
     run(tr.on_book(mkbook()))  # long
     assert tr.ledger.position > 0
     model.real_sleep = 0.2
@@ -462,7 +464,7 @@ def test_exit_closes_the_whole_lot_despite_float_error_in_position():
 
 
 def test_run_returns_promptly_after_watchdog_trips_while_feed_is_down():
-    tr, store, clock, _ = make()
+    tr, store, clock, _ = make(cfg=Config(stale_resumes_max=0))
 
     async def books():
         yield mkbook(recv_ts=clock.t)

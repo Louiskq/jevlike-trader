@@ -88,6 +88,11 @@ def prepare_live(store: Store, exchange: Exchange) -> None:
         )
 
 
+def open_feed(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncIterator[Book]:
+    return stream_books(cfg.coin, time.time, on_event=on_event,
+                        ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
+
+
 async def _watchdog(trader: Trader, every_s: float = 1.0) -> None:
     while not trader.stopped:
         await trader.check_stale()
@@ -151,7 +156,7 @@ def trader_live(trader: Trader, clock: Callable[[], float]) -> Callable[[], dict
             feed = "live" if clock() - book.recv_ts <= trader.cfg.stale_s else "stale"
             mid = book.mid
         return {"mid": mid, "feed": feed, "kill_reason": trader.kill_reason,
-                "stopped": trader.stopped}
+                "stopped": trader.stopped, "paused": trader.paused}
 
     return live
 
@@ -182,7 +187,8 @@ async def dry_run_with_dashboard(
     def live() -> dict:
         if traders:
             return trader_live(traders[0], clock)()
-        return {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False}
+        return {"mid": None, "feed": "waiting", "kill_reason": None, "stopped": False,
+                "paused": False}
 
     box: dict = {}
     app = create_app(db_path, live, should_stop=lambda: box["server"].should_exit)
@@ -263,6 +269,8 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
         ev[e["kind"]] = ev.get(e["kind"], 0) + 1
     lines.append(f"events {ev}  fills {len(store.fills())}  fees ${trader.ledger.fees:.4f}")
     lines.extend(format_soak(soak_report(store)))
+    lines.append(f"stale pauses {trader.stale_pauses}  resumes {trader.stale_resumes}"
+                 + ("  (paused at the end)" if trader.ended_paused else ""))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
     if exchange is not None:
         try:
@@ -321,12 +329,12 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"dashboard: http://127.0.0.1:{port}/ (Ctrl-C to stop)", flush=True)
 
             return await dry_run_with_dashboard(
-                cfg, args.db, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
+                cfg, args.db, store, meta, open_feed(cfg, on_event),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
                 on_trader=traders.append, executor=exchange, model=model,
             )
         return await dry_run(
-            cfg, store, meta, stream_books(cfg.coin, time.time, on_event=on_event),
+            cfg, store, meta, open_feed(cfg, on_event),
             duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
         )
 

@@ -175,3 +175,29 @@ def test_day_start_pnl_rolls_over_at_utc_midnight():
     assert not ks.tripped
     ks.update_pnl(-250.0)
     assert ks.reason == "daily_loss"
+
+
+def test_clear_stale_drops_only_the_stale_latch_and_waits_for_a_fresh_book():
+    clock = Clock()
+    k = KillSwitch(Config(), clock, day_start_pnl=0.0)
+    k.on_book()
+    clock.t += 16
+    assert k.check() == "stale_book"
+    k.clear_stale()
+    assert not k.tripped
+    clock.t += 100
+    assert k.check() is None  # no book seen since: nothing to judge
+    k.on_book()
+    clock.t += 16
+    assert k.check() == "stale_book"
+
+
+def test_clear_stale_keeps_another_reason_and_the_error_count():
+    k = KillSwitch(Config(), Clock(), day_start_pnl=0.0)
+    k.on_order_result(False)
+    k.on_order_result(False)
+    k.clear_stale()
+    k.on_order_result(False)
+    assert k.reason == "order_errors"  # the two earlier errors still counted
+    k.clear_stale()
+    assert k.reason == "order_errors"

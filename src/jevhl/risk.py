@@ -41,6 +41,14 @@ class KillSwitch:
         if self.reason is None:
             self.reason = reason
 
+    def clear_stale(self) -> None:
+        """The trader paused on a stale-book trip instead of stopping: drop that latch only
+        (any other reason, and the error count, stay) and wait for a fresh book before judging
+        staleness again."""
+        if self.reason == "stale_book":
+            self.reason = None
+        self._last_book = None
+
     def on_book(self) -> None:
         self._last_book = self._clock()
 
