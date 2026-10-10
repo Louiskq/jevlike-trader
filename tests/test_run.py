@@ -536,3 +536,70 @@ def test_a_permanent_kill_while_paused_is_not_reported_as_paused_at_the_end():
         return format_report(tr.store, tr)
 
     assert "(paused at the end)" not in asyncio.run(go())
+
+
+def test_a_pong_only_socket_is_dropped_and_reconnected_before_the_stale_pause():
+    """The real feed and the real trader, with the production timers scaled down in proportion
+    (ping 4 / dead 6 / stale 15 becomes 0.1 / 0.3 / 0.9): ping + dead < stale, so the feed
+    reconnects before the watchdog pauses the bot."""
+    from jevhl.feed import stream_books
+    from jevhl.ledger import Ledger
+    from jevhl.paper import PaperExchange
+    from jevhl.risk import KillSwitch
+    from jevhl.run import _watchdog
+
+    msg = json.dumps(SESSION[1])
+    pong = json.dumps({"channel": "pong"})
+
+    class PongOnly:
+        """One book, then answers every ping with a pong and nothing else."""
+
+        def __init__(self):
+            self.q, self.sent = asyncio.Queue(), []
+            self.q.put_nowait(msg)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def send(self, m):
+            self.sent.append(m)
+            if json.loads(m).get("method") == "ping":
+                await self.q.put(pong)
+
+        async def recv(self):
+            return await self.q.get()
+
+    class Healthy(PongOnly):
+        async def recv(self):
+            await asyncio.sleep(0.05)
+            return msg
+
+    sockets = [PongOnly(), Healthy()]
+    cfg = Config(stale_s=0.9, feed_ping_s=0.1, feed_dead_s=0.3, resume_after_s=0)
+    store = Store(":memory:")
+    events = []
+
+    async def go():
+        feed = stream_books(
+            cfg.coin, time.time, connect=lambda url: sockets.pop(0), ping_s=cfg.feed_ping_s,
+            dead_s=cfg.feed_dead_s, sleep=lambda s: asyncio.sleep(0.05),
+            on_event=lambda k, d: events.append((k, time.time())),
+        )
+        tr = Trader(cfg, store, MockModel(), PaperExchange(store, AssetMeta("BTC", 5), "BTC"),
+                    Ledger(), KillSwitch(cfg, time.time))
+        dog = asyncio.create_task(_watchdog(tr, every_s=0.02))
+        task = asyncio.create_task(tr.run(feed))
+        await asyncio.sleep(1.6)  # well past stale_s from the pong-only socket's one book
+        tr.stopped = True
+        await asyncio.wait_for(task, 3.0)
+        dog.cancel()
+        return tr
+
+    tr = asyncio.run(go())
+    kinds = [k for k, _ in events]
+    assert kinds.count("disconnect") == 1 and kinds.count("connect") == 2
+    assert tr.stale_pauses == 0 and tr.stale_resumes == 0
+    assert [e for e in store.events() if e["kind"] == "stale_pause"] == []

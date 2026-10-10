@@ -503,3 +503,38 @@ def test_a_flatten_that_fails_again_at_resume_time_keeps_the_bot_paused():
     fake.fail_state = []
     books(tr, clock, T0 + 90, 13)  # settled again: the flatten works, then it resumes
     assert not tr.paused and not tr.flatten_unresolved
+
+
+def test_a_stop_during_the_resume_time_flatten_ends_the_resume_before_any_position_read():
+    tr, store, clock, fake, model = make_live(
+        cfg=Config(flatten_retry_window_s=0), flatten_tries=1)
+    model.p = 0.5
+    fake.fail_state = down(2)
+    stall(tr, clock)
+    assert tr.paused and tr.flatten_unresolved
+    fake.fail_state = []  # the venue is back: the resume-time flatten will succeed
+    real_sync, flat_checks = tr._executor.sync_fills, []
+
+    def stopping_sync():
+        if tr._flatten_lock.locked():  # not the poll at the top of each book
+            tr.stopped = True  # Ctrl-C lands while the resume-time flatten is running
+        return real_sync()
+
+    tr._executor.sync_fills = stopping_sync
+    real_is_flat = tr._is_flat
+
+    async def counting_is_flat():
+        flat_checks.append(1)
+        return await real_is_flat()
+
+    tr._is_flat = counting_is_flat
+    books(tr, clock, T0 + 20, 13)
+    assert tr.stopped and flat_checks == []  # no exchange read for a resume that cannot happen
+    assert tr.stale_resumes == 0 and events(store, "stale_resume") == []
+
+
+def test_a_stale_pause_is_impossible_before_the_first_book():
+    """So _settle always has a previous book (it needs no `prev is None` case)."""
+    tr, store, clock, _ = make_paper()
+    clock.t = T0 + 1000
+    assert run(tr.check_stale()) is None and not tr.paused and tr.stale_pauses == 0
