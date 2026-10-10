@@ -305,15 +305,107 @@ def test_the_dead_wait_is_dead_s_not_ping_s():
     assert len(books) == 1 and "disconnect" not in events
 
 
-def test_any_message_after_a_ping_keeps_the_socket_and_the_ping_cycle_restarts():
-    ws = PongWS(pongs=3, then=[json.dumps(L2)])
+class PongOnlyWS(FakeWS):
+    """Answers every ping with a pong and never sends an l2Book (the incident's likely shape)."""
+
+    def __init__(self):
+        super().__init__([])
+        self.q, self.closed = asyncio.Queue(), False
+
+    async def __aexit__(self, *a):
+        self.closed = True
+        return False
+
+    async def send(self, m):
+        await super().send(m)
+        if json.loads(m).get("method") == "ping":
+            await self.q.put(json.dumps(PONG))
+
+    async def recv(self):
+        return await self.q.get()
+
+
+def test_a_pong_is_not_proof_of_life_for_books_a_pong_only_socket_is_dropped():
+    ws, ws2 = PongOnlyWS(), FakeWS([json.dumps(L2)])
+    events, sleeps = [], []
+
+    async def sleep(s):
+        sleeps.append(s)
+
+    books = guarded(take(
+        stream_books("BTC", lambda: 1.0, connect=make_connect([ws, ws2]), ping_s=0.01,
+                     dead_s=0.04, on_event=lambda k, d: events.append((k, d)), sleep=sleep), 1))
+    assert len(books) == 1 and ws.closed
+    assert [k for k, _ in events].count("disconnect") == 1 and sleeps == [1.0]
+    assert "no book" in dict(events)["disconnect"]
+
+
+def test_the_pong_only_drop_comes_at_ping_plus_dead_after_the_last_book():
+    ws, ws2 = PongOnlyWS(), FakeWS([json.dumps(L2)])
+    loop_times = []
+
+    async def sleep(s):
+        loop_times.append(asyncio.get_running_loop().time())
+
+    async def go():
+        t0 = asyncio.get_running_loop().time()
+        await take(stream_books("BTC", lambda: 1.0, connect=make_connect([ws, ws2]),
+                                ping_s=0.05, dead_s=0.15, sleep=sleep), 1)
+        return loop_times[0] - t0
+
+    took = guarded(go())
+    assert 0.18 <= took < 0.6  # about ping_s + dead_s, not earlier, not never
+
+
+class ChattyWS(PongOnlyWS):
+    """Sends a non-book message every 2 ms, faster than any ping timer, and never a book."""
+
+    async def recv(self):
+        await asyncio.sleep(0.002)
+        return json.dumps(PONG)
+
+
+def test_a_socket_chattering_without_books_is_dropped_though_no_timer_ever_fires():
+    ws, ws2 = ChattyWS(), FakeWS([json.dumps(L2)])
     events = []
     books = guarded(take(
-        stream_books("BTC", lambda: 1.0, connect=make_connect([ws]), ping_s=0.01, dead_s=0.2,
+        stream_books("BTC", lambda: 1.0, connect=make_connect([ws, ws2]), ping_s=0.05,
+                     dead_s=0.1, on_event=lambda k, d: events.append((k, d)), sleep=no_sleep), 1))
+    assert len(books) == 1 and ws.closed and not ws.sent[1:]  # never even pinged
+    assert "no book" in dict(events)["disconnect"]
+
+
+def test_the_book_bound_restarts_at_each_book_not_at_connect():
+    class Slow(FakeWS):
+        async def recv(self):
+            await asyncio.sleep(0.04)  # a book every 40 ms; the bound is 80 ms; run is 240 ms
+            return json.dumps(L2)
+
+    events = []
+    books = guarded(take(
+        stream_books("BTC", lambda: 1.0, connect=make_connect([Slow([])]), ping_s=0.03,
+                     dead_s=0.05, on_event=lambda k, d: events.append(k), sleep=no_sleep), 6))
+    assert len(books) == 6 and "disconnect" not in events
+
+
+def test_a_quiet_spell_shorter_than_ping_plus_dead_is_not_dropped():
+    ws = PongWS(pongs=3, then=[json.dumps(L2)])  # pings at 0.03 s steps, book after ~0.09 s
+    events = []
+    books = guarded(take(
+        stream_books("BTC", lambda: 1.0, connect=make_connect([ws]), ping_s=0.03, dead_s=0.5,
                      on_event=lambda k, d: events.append(k), sleep=no_sleep), 1))
     assert len(books) == 1
     assert sum(1 for m in ws.sent if m == {"method": "ping"}) >= 3
     assert "disconnect" not in events and events.count("connect") == 1
+
+
+def test_books_arriving_inside_the_bound_keep_the_socket_even_with_pongs_between():
+    ws = FakeWS([json.dumps(L2)] * 3)
+    events = []
+    books = guarded(take(
+        stream_books("BTC", lambda: 1.0, connect=make_connect([ws]), ping_s=0.01, dead_s=0.5,
+                     on_event=lambda k, d: events.append(k), sleep=no_sleep), 3))
+    assert len(books) == 3 and "disconnect" not in events
 
 
 def test_a_book_after_a_drop_resets_the_backoff_for_a_silent_socket_too():

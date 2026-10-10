@@ -119,6 +119,8 @@ async def stream_books(
     """Yield books forever: subscribe, ping when idle, reconnect with backoff on any
     connection failure. A socket that stays open but silent is pinged after ping_s; if
     nothing at all arrives within dead_s more it is dropped and reconnected the same way.
+    Only a book proves the feed is alive: a socket that answers pings but sends no book for
+    ping_s + dead_s is dropped too.
     Malformed messages are reported through on_event and skipped."""
     backoff = 1.0
     sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}
@@ -128,13 +130,21 @@ async def stream_books(
                 await ws.send(json.dumps(sub))
                 on_event("connect", url)
                 pinged = False
+                loop = asyncio.get_running_loop()
+                book_by = loop.time() + ping_s + dead_s  # a book must arrive before this
                 while True:
+                    wait = dead_s if pinged else ping_s
+                    book_left = book_by - loop.time()
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), dead_s if pinged else ping_s)
+                        raw = await asyncio.wait_for(ws.recv(), min(wait, max(book_left, 0)))
                     except TimeoutError:
                         if pinged:
                             raise ConnectionError(
                                 f"no data for {ping_s + dead_s:g} s (pinged, no reply)"
+                            ) from None
+                        if book_left <= wait:  # pongs came, books did not
+                            raise ConnectionError(
+                                f"no book for {ping_s + dead_s:g} s (pings answered)"
                             ) from None
                         await ws.send(json.dumps({"method": "ping"}))
                         pinged = True
@@ -148,6 +158,7 @@ async def stream_books(
                     if book is not None:
                         backoff = 1.0
                         yield book
+                        book_by = loop.time() + ping_s + dead_s  # the consumer's time is not ours
         except (OSError, websockets.WebSocketException) as e:
             on_event("disconnect", f"{type(e).__name__}: {e}")
             await sleep(backoff)
