@@ -34,6 +34,18 @@ def run(coro):
     return asyncio.run(coro)
 
 
+class Recorder(StubModel):
+    """A StubModel that keeps every input it was shown."""
+
+    def __init__(self, p=0.9, **kw):
+        super().__init__(p, **kw)
+        self.inputs = []
+
+    def predict(self, inp):
+        self.inputs.append(inp)
+        return super().predict(inp)
+
+
 def mkbook(bid=65000.0, ask=65003.0, recv_ts=T0, bid_sz=5.0, ask_sz=5.0):
     return Book(ts=recv_ts, recv_ts=recv_ts, coin="BTC",
                 bids=[[bid - i, bid_sz] for i in range(20)],
@@ -722,8 +734,8 @@ def test_unreadable_open_orders_keep_the_quote_as_it_was():
     tick(tr, clock, T0 + 15)
     assert tr.maker_view()["quote"]["oid"] == 1000 and events(store, "sync_error")
     tr._quote = UNKNOWN
-    tick(tr, clock, T0 + 16)  # unknown and unreadable: no quote is sent
-    assert events(store, "quote_skipped")[-1].endswith("open orders unknown")
+    tick(tr, clock, T0 + 16)  # unknown and unreadable: no decision, no quote
+    assert events(store, "decision_skipped")[-1].endswith("open orders unknown")
     assert len(calls(fake, "order")) == 1
     fake.open_orders = real
 
@@ -759,9 +771,9 @@ def test_no_quote_when_our_order_is_the_whole_side():
     clock.t = T0 + 1
     alone = Book(ts=clock.t, recv_ts=clock.t, coin="BTC", bids=[[65001.0, SZ]],
                  asks=[[65003.0, 5.0]])
-    run(tr.on_book(alone))
-    assert events(store, "quote_skipped")[-1].endswith("our order is the whole side")
-    assert len(quote_actions(fake)) == 1 and len(store.decisions()) == 2
+    run(tr.on_book(alone))  # no market book is left to decide or label on
+    assert events(store, "decision_skipped")[-1].endswith("our order is the whole side")
+    assert len(quote_actions(fake)) == 1 and len(store.decisions()) == 1
 
 
 def test_maker_latency_is_logged_with_rest_action_and_loop_times():
@@ -789,6 +801,90 @@ def test_decision_and_outcome_mids_exclude_our_own_quote():
     tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)
     (o30,) = store.outcomes(first["id"])
     assert o30["mid_future"] == 65001.5 and o30["label"] is None  # unchanged market: a tie
+
+
+def test_a_static_market_looks_static_to_the_model_with_our_quote_as_the_touch():
+    """The mid history (recent mids, returns, sampled mids) is the market's too: with the raw
+    mid our own quote would show up as a move toward the side the model last chose."""
+    model = Recorder()
+    tr, store, clock, fake, _ = make_live(model=model)
+    tick(tr, clock, T0)  # market 65000/65003; our buy goes to 65001
+    no_polls(tr, clock)
+    for i in range(1, 7):
+        tick(tr, clock, T0 + i, bid=65001.0, bid_sz=SZ)  # the raw book: our bid is the touch
+    last = model.inputs[-1]
+    assert last.mid == 65001.5 and last.recent_mids == [65001.5] * 7
+    assert last.returns_bps[5] == 0.0  # T0+6 against T0+1: no change
+    assert {m for m in last.sampled_mids if m is not None} == {65001.5}
+
+
+def test_an_unknown_quote_is_reread_before_the_decision_not_decided_on_the_raw_book():
+    model = Recorder()
+    tr, store, clock, fake, _ = make_live(model=model)
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.modify_response = {"status": "ok", "response": {"type": "default"}}
+    model.p = 0.2
+    tick(tr, clock, T0 + 1, bid=65001.0, bid_sz=SZ)  # an unclear modify reply: unknown
+    assert tr.maker_view()["quote"] == "unknown"
+    tick(tr, clock, T0 + 2, bid=65001.0, bid_sz=SZ)  # our buy still rests at 65001
+    assert events(store, "quote_adopted") == ["oid 1000"]
+    assert store.decisions()[-1]["mid"] == 65001.5 and model.inputs[-1].mid == 65001.5
+    assert model.inputs[-1].recent_mids == [65001.5] * 3
+
+
+def test_an_unknown_unreadable_quote_skips_the_decision_and_its_labels():
+    """If the open orders cannot be read, the book may hold our order: no decision, no mid
+    history and no outcome come from it (the outcome waits for a later book, within stale_s)."""
+    model = Recorder()
+    tr, store, clock, fake, _ = make_live(model=model)
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    real = fake.open_orders
+    fake.open_orders = lambda *a: (_ for _ in ()).throw(ConnectionError("down"))
+    tr._quote = UNKNOWN
+    tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)  # the T0 decision's 30 s outcome is due
+    (first,) = store.decisions()
+    assert len(model.inputs) == 1 and store.outcomes(first["id"]) == []
+    assert events(store, "decision_skipped")[-1].endswith("open orders unknown")
+    fake.open_orders = real
+    tick(tr, clock, T0 + 35, bid=65001.0, bid_sz=SZ)  # read again: our buy is adopted
+    (o30,) = store.outcomes(first["id"])
+    assert o30["mid_future"] == 65001.5
+    assert store.decisions()[-1]["mid"] == 65001.5
+    assert model.inputs[-1].recent_mids == [65001.5, 65001.5]  # nothing from the skipped book
+
+
+def test_a_failed_reread_is_retried_after_5_s_not_at_every_book():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    n_reads = [0]
+
+    def down(*a):
+        n_reads[0] += 1
+        raise ConnectionError("down")
+
+    fake.open_orders = down
+    tr._quote = UNKNOWN
+    for i in range(1, 6):
+        tick(tr, clock, T0 + i)  # weight 20 a read: not one a second while it fails
+    assert n_reads[0] == 1
+    tick(tr, clock, T0 + 6)
+    assert n_reads[0] == 2
+
+
+def test_a_paused_maker_with_unknown_orders_stores_no_paused_mid():
+    cfg = replace(MCFG, flatten_retry_window_s=0)
+    tr, store, clock, fake, _ = make_live(cfg=cfg)
+    tick(tr, clock, T0)
+    fake.fail_cancel = [ConnectionError("down")] * 10  # the stop cancel and the flatten fail
+    fake.taker_hits(1000, 0.00005)
+    clock.t = T0 + 15.01
+    run(tr.check_stale())
+    assert tr.paused and tr.flatten_unresolved and tr.maker_view()["quote"] == "unknown"
+    tick(tr, clock, T0 + 20, bid=65001.0, bid_sz=SZ)
+    assert len(store.decisions()) == 1 and tr.error is None  # no paused hold on the raw mid
 
 
 # ---- gaps found by break-it checks ----

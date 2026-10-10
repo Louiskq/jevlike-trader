@@ -4,8 +4,10 @@ About once a second, on a REST book plus the trades since the last decision: ask
 then keep one post-only quote on its side (buy if p_up >= 0.5, else sell), one tick inside the
 touch. The quote is replaced (one modify) only when its side or price changes, so an
 unchanged quote keeps its queue place. Our own resting order is removed from the book before
-pricing and prompting: it is the touch in the next book, and pricing off it would walk the
-quote a tick further every second.
+pricing, prompting and recording any mid (decisions, outcomes, the mid history): it is the
+touch in the next book, and pricing off it would walk the quote a tick further every second,
+while mids with it would lean toward the side the model chose. While the open orders are
+unknown they are re-read first; a book still without a market view is not used at all.
 
 Shared with the taker (inherited from Trader): the loop, outcomes, fill booking (idempotent
 on tid), the kill switch, the M6 flatten retry and the M7 stale pause. The maker adds:
@@ -146,6 +148,7 @@ class MakerTrader(Trader):
         self._last_scored: tuple | None = None  # the book of the last scored decision
         self._score_ids: dict[int, float] = {}  # decision id -> ts, outcomes resolved for these
         self._last_reconcile = self._last_budget = self._last_latency = 0.0
+        self._reread_at = 0.0  # unknown open orders: not re-read before this
         self.budget: dict | None = None
         self.capped = False
         self.latency: dict[str, deque] = {k: deque(maxlen=LATENCY_KEEP)
@@ -167,7 +170,12 @@ class MakerTrader(Trader):
 
     async def on_book(self, book: Book) -> None:
         if not self.stopped:
-            self._mids.append((book.recv_ts, book.mid))
+            if (self._quote == UNKNOWN and self._executor.live and not self._blocked()
+                    and self._clock() >= self._reread_at):
+                await self._reread_unknown()
+            mid = self._market_mid(book)
+            if mid is not None:
+                self._mids.append((book.recv_ts, mid))
             keep_from = book.recv_ts - max(RETURN_WINDOWS_S) - 10
             while self._mids and self._mids[0][0] < keep_from:
                 self._mids.popleft()
@@ -178,10 +186,28 @@ class MakerTrader(Trader):
             self._last_latency = self._clock()
             self.store.log_event(self._clock(), "maker_latency", json.dumps(self.latency_summary()))
 
+    async def _reread_unknown(self) -> None:
+        """Re-read the open orders before this book is used: while they are unknown the book
+        may hold our own order. A read that leaves them unknown (it failed, or strays could not
+        be cancelled) is retried after MAKER_FILL_POLL_S, not at every book (weight 20)."""
+        async with self._lock:
+            if self._quote == UNKNOWN and not self._blocked():
+                await self._reconcile_locked()
+                if self._quote == UNKNOWN:
+                    self._reread_at = self._clock() + MAKER_FILL_POLL_S
+
+    def _market_mid(self, book: Book) -> float | None:
+        seen = self._seen(book)
+        return None if seen is None else seen.mid
+
     def _resolve_outcomes(self, book: Book) -> None:
         """As the taker's, but only for the decisions chosen for scoring (see _mark_scored),
-        and with the market's mid: our own quote removed, as for the decision's mid."""
-        mid = (self._seen(book) or book).mid
+        and with the market's mid: our own quote removed, as for the decision's mid. A book
+        without a known market view resolves nothing; a later one within stale_s does."""
+        seen = self._seen(book)
+        if seen is None:
+            return
+        mid = seen.mid
         for h in HORIZONS_S:
             lo = book.recv_ts - h - self.cfg.stale_s
             for row in self.store.pending(h, lo, book.recv_ts - h):
@@ -207,17 +233,28 @@ class MakerTrader(Trader):
                           latency_ms=latency_ms)
 
     def _seen(self, book: Book) -> Book | None:
-        """The book as the model and the pricing see it (live: our own order removed)."""
+        """The market's book as the model, the pricing and the labels see it (live: our own
+        order removed). None when that cannot be known: the open orders are unknown, or our
+        order is a whole side."""
         if not self._executor.live:
             return book
+        if self._quote == UNKNOWN:
+            return None
         return without_own(book, self._quote, self._executor.meta)
+
+    def _unseen_why(self) -> str:
+        return "open orders unknown" if self._quote == UNKNOWN else "our order is the whole side"
 
     async def _decide(self, book: Book) -> None:
         """Decisions store the market's mid (our own quote removed): live, our quote one tick
         inside the touch moves the raw mid toward our side, which follows p_up, and would
-        bias the calibration labels."""
+        bias the calibration labels. Without a market view there is no decision at all."""
         cfg, ts = self.cfg, book.recv_ts
-        seen = self._seen(book) or book
+        seen = self._seen(book)
+        if seen is None:
+            self.store.log_event(self._clock(), "decision_skipped",
+                                 f"book {ts:.3f}: {self._unseen_why()}")
+            return
         if self._clock() - ts > cfg.stale_s:
             self.store.insert_decision(hold("stale", ts=ts, gate=self._gate), seen.mid)
             return
@@ -253,13 +290,9 @@ class MakerTrader(Trader):
                 return self._skip(decision_id, "halted or paused")
             if self._clock() - book.recv_ts > MAKER_BOOK_MAX_AGE_S:
                 return self._skip(decision_id, "old book")
-            if self._quote == UNKNOWN:
-                await self._reconcile_locked()
-                if self._blocked() or self._quote == UNKNOWN:
-                    return self._skip(decision_id, "open orders unknown")
             view = self._seen(book)
-            if view is None:
-                return self._skip(decision_id, "our order is the whole side")
+            if view is None:  # unknown since the decision: re-read at the next book
+                return self._skip(decision_id, self._unseen_why())
             px = maker_price(side, view.bids[0][0], view.asks[0][0], meta)
             q = self._quote
             if q is not None and q.side == side and q.px == px:

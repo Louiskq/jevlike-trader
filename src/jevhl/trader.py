@@ -138,7 +138,9 @@ class Trader:
             return
         prev, self._last_book = self._last_book, book
         self._kill.on_book()
-        self._recent = (self._recent + [book.mid])[-RECENT_MIDS:]
+        mid = self._market_mid(book)
+        if mid is not None:
+            self._recent = (self._recent + [mid])[-RECENT_MIDS:]
         self._resolve_outcomes(book)
         await self._poll_fills()
         await self._run_exits(book)
@@ -149,9 +151,11 @@ class Trader:
             if self.stopped:
                 return
             if self._paused:
-                self.store.insert_decision(
-                    hold("paused", ts=book.recv_ts, gate=self._gate), book.mid
-                )
+                mid = self._market_mid(book)
+                if mid is not None:
+                    self.store.insert_decision(
+                        hold("paused", ts=book.recv_ts, gate=self._gate), mid
+                    )
                 return
         if self._inflight:
             self.store.log_event(self._clock(), "skip", "decision in flight")
@@ -162,6 +166,11 @@ class Trader:
         finally:
             self._inflight = False
         await self._risk(book)
+
+    def _market_mid(self, book: Book) -> float | None:
+        """The mid kept in the recent mids and stored with a paused hold. The maker takes its
+        own order out first, and has none while its open orders are unknown."""
+        return book.mid
 
     def _resolve_outcomes(self, book: Book) -> None:
         """Outcome mid = the first book at or after decision ts + horizon, but only if it
