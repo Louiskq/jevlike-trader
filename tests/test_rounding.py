@@ -7,6 +7,8 @@ import pytest
 from jevhl.rounding import (
     AssetMeta,
     aggressive_price,
+    maker_price,
+    next_price,
     notional_ok,
     order_size,
     reduce_size,
@@ -126,3 +128,65 @@ def test_reduce_size_clamps_to_position_and_refuses_wrong_direction():
     assert reduce_size("sell", 1.0, -1.0, BTC) == 0
     assert reduce_size("buy", 1.0, 1.0, BTC) == 0
     assert reduce_size("sell", 0.000001, 1.0, BTC) == 0  # below one lot
+
+
+# ---- maker quote prices (milestone 8) ----
+
+SZ2 = AssetMeta("X", 2)  # at most 4 decimals: 9.9999 and 10.000 are both valid
+
+
+def test_buy_quote_is_one_tick_above_best_bid():
+    assert maker_price("buy", 85517.0, 85520.0, BTC) == Decimal("85518")
+
+
+def test_sell_quote_is_one_tick_below_best_ask():
+    assert maker_price("sell", 85517.0, 85520.0, BTC) == Decimal("85519")
+
+
+@pytest.mark.parametrize("side,want", [("buy", "85517"), ("sell", "85518")])
+def test_one_tick_spread_quotes_at_the_touch(side, want):
+    assert maker_price(side, 85517.0, 85518.0, BTC) == Decimal(want)
+
+
+def test_two_tick_spread_both_sides_meet_in_the_middle_without_crossing():
+    assert maker_price("buy", 85517.0, 85519.0, BTC) == Decimal("85518")
+    assert maker_price("sell", 85517.0, 85519.0, BTC) == Decimal("85518")
+
+
+def test_quote_price_at_decade_boundary_never_crosses():
+    assert next_price(9.9999, SZ2, up=True) == Decimal("10.000")
+    assert next_price(10.0, SZ2, up=False) == Decimal("9.9999")
+    assert maker_price("buy", 9.9998, 10.001, SZ2) == Decimal("9.9999")
+    assert maker_price("buy", 9.9999, 10.001, SZ2) == Decimal("10.000")
+    assert maker_price("sell", 9.9998, 10.0, SZ2) == Decimal("9.9999")  # finer tick below 10
+    # one tick apart across the decade: both sides stay at their own touch
+    assert maker_price("buy", 9.9999, 10.0, SZ2) == Decimal("9.9999")
+    assert maker_price("sell", 9.9999, 10.0, SZ2) == Decimal("10.000")
+
+
+def test_quote_price_for_coin_with_sz_decimals_4():
+    assert maker_price("buy", 3456.7, 3457.0, ETH) == Decimal("3456.8")
+    assert maker_price("sell", 3456.7, 3457.0, ETH) == Decimal("3456.9")
+
+
+def test_quote_price_rejects_a_crossed_or_locked_book():
+    with pytest.raises(ValueError):
+        maker_price("buy", 85518.0, 85518.0, BTC)
+
+
+def test_random_books_never_produce_a_crossing_quote():
+    import random
+
+    rng = random.Random(7)
+    for _ in range(3000):
+        meta = AssetMeta("R", rng.choice([0, 1, 2, 4, 5]))
+        mag = 10.0 ** rng.uniform(-2, 5.5)
+        bid = round_price(mag, meta, up=True)  # up: a tiny price never rounds to 0
+        ask = bid
+        for _ in range(rng.choice([1, 1, 2, 3, 7])):
+            ask = next_price(ask, meta, up=True)
+        for side in ("buy", "sell"):
+            px = maker_price(side, bid, ask, meta)
+            assert bid <= px <= ask
+            assert (px < ask) if side == "buy" else (px > bid), (meta, bid, ask, side, px)
+            assert round_price(px, meta, up=True) == px == round_price(px, meta, up=False)

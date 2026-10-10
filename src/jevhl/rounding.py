@@ -84,3 +84,27 @@ def reduce_size(side: str, size: float, position: float, meta: AssetMeta) -> Dec
         return Decimal(0)
     room_d = Decimal(str(room)).quantize(Decimal(1).scaleb(-meta.sz_decimals))
     return round_size(min(Decimal(str(size)), room_d), meta)
+
+
+def next_price(px: float | Decimal, meta: AssetMeta, *, up: bool) -> Decimal:
+    """The nearest valid price strictly above (up) or below px. Stepping by the finest
+    possible tick and then rounding handles the decade boundary, where the tick changes
+    (10.000 - one tick is 9.9999 for a coin allowed 4 decimals)."""
+    step = Decimal(1).scaleb(-(MAX_PERP_DECIMALS - meta.sz_decimals))
+    p = _dec(px)
+    return round_price(p + step, meta, up=True) if up else round_price(p - step, meta, up=False)
+
+
+def maker_price(side: str, best_bid: float | Decimal, best_ask: float | Decimal,
+                meta: AssetMeta) -> Decimal:
+    """Post-only quote price: one tick inside the touch, or at the touch when the spread is
+    one tick. A buy is always below the best ask and a sell above the best bid, so the
+    quote never crosses (which would be a post-only rejection)."""
+    bid, ask = _dec(best_bid), _dec(best_ask)
+    if not bid < ask:
+        raise ValueError(f"crossed or locked book: bid {bid} ask {ask}")
+    if side == "buy":
+        px = next_price(bid, meta, up=True)
+        return px if px < ask else round_price(bid, meta, up=False)
+    px = next_price(ask, meta, up=False)
+    return px if px > bid else round_price(ask, meta, up=True)

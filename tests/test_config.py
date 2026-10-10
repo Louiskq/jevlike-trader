@@ -167,3 +167,50 @@ def test_validate_rejects_nonfinite_recovery_settings_set_directly(field):
     for v in (float("nan"), float("inf")):
         with pytest.raises(ConfigError):
             Config(**{field: v}).validate()
+
+
+# ---- maker strategy (milestone 8) ----
+
+
+def test_strategy_defaults_to_taker_and_maker_settings_have_defaults():
+    c = Config.from_env({})
+    assert c.strategy == "taker"
+    assert c.maker_size_usd == 11 and c.maker_deadline_s == 1.0
+    assert c.decision_deadline_s == 2.0  # the taker keeps its own deadline
+
+
+def test_config_strategy_values():
+    c = Config.from_env({"STRATEGY": "maker", "MAX_POSITION_USD": "15", "MAKER_SIZE_USD": "11.37",
+                         "MAKER_DECIDER_DEADLINE_S": "0.67"})
+    assert (c.strategy, c.maker_size_usd, c.maker_deadline_s) == ("maker", 11.37, 0.67)
+    assert c.decision_deadline_s == 0.67  # the maker's deadline replaces the taker's
+    for bad in ("Maker", "both", "mm"):
+        with pytest.raises(ConfigError):
+            Config.from_env({"STRATEGY": bad})
+
+
+@pytest.mark.parametrize("env", [
+    {"MAKER_SIZE_USD": "15.01", "MAX_POSITION_USD": "15"},  # above the cap
+    {"MAKER_SIZE_USD": "9.99"},  # below the $10 minimum
+    {"MAKER_SIZE_USD": "nan"},
+    {"MAKER_SIZE_USD": "inf"},
+    {"MAKER_DECIDER_DEADLINE_S": "0"},
+    {"MAKER_DECIDER_DEADLINE_S": "nan"},
+    {"MAKER_DECIDER_DEADLINE_S": "-1"},
+])
+def test_config_rejects_maker_size_above_cap_or_below_minimum(env):
+    with pytest.raises(ConfigError):
+        Config.from_env({"STRATEGY": "maker", **env})
+
+
+def test_maker_size_at_the_cap_is_allowed_and_only_checked_for_the_maker():
+    assert Config.from_env({"STRATEGY": "maker", "MAKER_SIZE_USD": "15",
+                            "MAX_POSITION_USD": "15"}).maker_size_usd == 15
+    # a taker with a $10 cap is not refused because of the unused maker size default ($11)
+    assert Config.from_env({"MAX_POSITION_USD": "10"}).strategy == "taker"
+
+
+@pytest.mark.parametrize("field", ["maker_size_usd", "maker_deadline_s"])
+def test_validate_rejects_nonfinite_maker_settings_set_directly(field):
+    with pytest.raises(ConfigError):
+        Config(strategy="maker", **{field: float("nan")}).validate()
