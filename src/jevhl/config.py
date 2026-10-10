@@ -111,6 +111,11 @@ class Config:
         decider_url = None
         if model == "decider":
             decider_url = parse_decider_url(env.get("DECIDER_URL", ""))
+        strategy = env.get("STRATEGY") or "taker"
+        maker = {}  # read (and checked) only for the maker: a leftover value never stops the taker
+        if strategy == "maker":
+            maker = {"maker_size_usd": _num(env, "MAKER_SIZE_USD", 11.0),
+                     "maker_deadline_s": _num(env, "MAKER_DECIDER_DEADLINE_S", 1.0)}
         cfg = cls(
             network=network,
             model=model,
@@ -127,11 +132,10 @@ class Config:
             resume_after_s=_num(env, "RESUME_AFTER_S", 60.0),
             resume_max_gap_s=_num(env, "RESUME_MAX_GAP_S", 8.0),
             stale_resumes_max=_whole(env, "STALE_RESUMES_MAX", 5),
-            strategy=env.get("STRATEGY") or "taker",
-            maker_size_usd=_num(env, "MAKER_SIZE_USD", 11.0),
-            maker_deadline_s=_num(env, "MAKER_DECIDER_DEADLINE_S", 1.0),
+            strategy=strategy,
             api_key=env.get("HL_API_KEY") or None,
             account_address=env.get("HL_ACCOUNT_ADDRESS") or None,
+            **maker,
         )
         cfg.validate()
         return cfg
@@ -176,12 +180,11 @@ class Config:
             raise ConfigError("STALE_RESUMES_MAX must be >= 0")
         if self.strategy not in STRATEGIES:
             raise ConfigError(f"STRATEGY must be one of {STRATEGIES}, got {self.strategy!r}")
-        if not math.isfinite(self.maker_deadline_s) or self.maker_deadline_s <= 0:
-            raise ConfigError("MAKER_DECIDER_DEADLINE_S must be finite and positive")
-        if not math.isfinite(self.maker_size_usd):
-            raise ConfigError("MAKER_SIZE_USD must be finite")
-        if self.strategy == "maker" and not (
-            self.min_notional_usd <= self.maker_size_usd <= self.max_position_usd
-        ):
-            raise ConfigError("MAKER_SIZE_USD must be between the minimum notional and "
-                              "MAX_POSITION_USD")
+        if self.strategy == "maker":  # unused, so never checked, for the taker
+            if not math.isfinite(self.maker_deadline_s) or self.maker_deadline_s <= 0:
+                raise ConfigError("MAKER_DECIDER_DEADLINE_S must be finite and positive")
+            if not math.isfinite(self.maker_size_usd):
+                raise ConfigError("MAKER_SIZE_USD must be finite")
+            if not self.min_notional_usd <= self.maker_size_usd <= self.max_position_usd:
+                raise ConfigError("MAKER_SIZE_USD must be between the minimum notional and "
+                                  "MAX_POSITION_USD")

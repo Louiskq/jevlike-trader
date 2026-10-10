@@ -210,6 +210,16 @@ def test_maker_size_at_the_cap_is_allowed_and_only_checked_for_the_maker():
     assert Config.from_env({"MAX_POSITION_USD": "10"}).strategy == "taker"
 
 
+@pytest.mark.parametrize("env", [
+    {"MAKER_DECIDER_DEADLINE_S": "0"}, {"MAKER_DECIDER_DEADLINE_S": "nan"},
+    {"MAKER_DECIDER_DEADLINE_S": "soon"}, {"MAKER_SIZE_USD": "inf"}, {"MAKER_SIZE_USD": "x"},
+])
+def test_leftover_bad_maker_settings_do_not_stop_the_taker(env):
+    c = Config.from_env(env)
+    assert c.strategy == "taker" and c.decision_deadline_s == 2.0
+    Config(maker_deadline_s=0.0, maker_size_usd=float("nan")).validate()  # set directly too
+
+
 @pytest.mark.parametrize("field", ["maker_size_usd", "maker_deadline_s"])
 def test_validate_rejects_nonfinite_maker_settings_set_directly(field):
     with pytest.raises(ConfigError):
