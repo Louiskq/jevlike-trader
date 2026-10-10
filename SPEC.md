@@ -27,6 +27,24 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 - Consecutive order errors threshold: 3. Stale book threshold: no `l2Book` for 15 s (about 3 missed snapshots).
 - Daily loss is measured per UTC day on realized plus unrealized P&L after fees.
 
+### Maker strategy (milestone 8, decided 2026-10-10)
+
+| Topic | Decision |
+|---|---|
+| Strategy | `STRATEGY=taker` (default: everything above, unchanged) or `STRATEGY=maker`, sharing the feed, model, ledger, kill switch, reconcile and dashboard |
+| Maker cadence | About one decision per second, on a REST `l2Book` snapshot plus the trades received since the last decision (WS `trades` subscription). Measured 2026-10-10: testnet's WS book updates only every ~5.25 s and the REST top of book changed twice in 15 s, so most seconds repeat the same book |
+| Maker action | Always buy or sell: buy if `p_up >= 0.5`, else sell. Hold only when the model is late or its answer invalid. When the position cap blocks a side, the quote goes on the other side (logged as capped) |
+| Maker order | One post-only (Hyperliquid `Alo`) limit order on the model's side, one tick inside the touch (at the touch when the spread is one tick). It is replaced only when the side or the quote price changes, so an unchanged quote keeps its queue place |
+| Maker prompt | Jarrod-style state: book imbalance, depth at several distances from mid, top levels, returns over several windows, recent mids, taker trades (buy and sell volume, net flow, last prints), plus short instructions. Drafted by the assistant for the user to edit (a modelling decision). The taker strategy keeps its current prompt |
+
+**Assumptions I added for milestone 8 (not your decisions; check them):**
+- Quote size fixed at `MAKER_SIZE_USD` (default $11, just above the $10 minimum), position cap as configured.
+- No time exit in maker mode: the position is reduced by quoting the other side, as in Jarrod's bot; kill switch and shutdown still cancel all and flatten.
+- On a late or invalid answer the resting quote is left as it is; on a stale book, a kill or shutdown, every resting order is cancelled first.
+- A rejected post-only order (it would have crossed) is logged and re-priced at the next decision.
+- Order actions capped at 20 per minute (modify when possible); on a rate-limit error the bot cancels and pauses quoting. Per-address request budget logged.
+- Paper fills: the resting quote fills when a real trade print reaches its price; maker fee 0.015% until verified on testnet.
+
 ## Design proposal
 
 Modules (`src/jevhl/`): `config` (env; rejects mainnet) · `rounding` (price and size to exchange rules) · `feed` (WS client, message parsing, staleness) · `model` (interface, `MockModel`, `DeciderModel` over HTTP) · `policy` (gate, abstain, confidence sizing, caps; pure functions) · `risk` (kill switch state machine) · `exchange` (SDK wrapper: place, close, cancel, flatten, fills; fee capture) · `paper` (dry-run fill simulation against the book) · `ledger` (positions, fees, P&L before and after fees, confirmed by exchange fills only) · `store` (SQLite) · `calibration` (labelling, Brier, baseline Brier, reliability bins) · `trader` (the loop: one decision in flight, hold when late) · `server` (FastAPI, SSE, static dashboard).
@@ -43,7 +61,7 @@ Dashboard shows: live mid and markers, current decision (`p_up`, action, gate, s
 - API (agent) wallet key only. Key only from `.env`, which is in `.gitignore` before it exists. Never logged, never committed. No withdrawal or transfer code anywhere.
 - Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, show on dashboard. Daily-loss and order-error kills stop the bot for good. A stale-book kill instead pauses it (no new orders, feed still read) and it may resume once books have arrived continuously for a settling period (default 60 s) and no flatten is unresolved; at most 5 such resumes per run, after which the next stale kill is permanent. Every pause, resume and give-up is logged and shown. Also flatten on clean shutdown.
 - Signing and orders only through the SDK. Price and size rounded to exchange rules (tick, lot, significant figures), and tested.
-- Well inside rate limits (`.pipeline/hl-facts.md`): one WS, few subscriptions, at most about 2 orders per minute plus light polling.
+- Well inside rate limits (`.pipeline/hl-facts.md`): one WS, few subscriptions, at most about 2 orders per minute plus light polling. Maker mode (milestone 8): at most 20 order actions per minute and one REST book read per second.
 - Ask before adding any dependency that needs system packages.
 - Pipeline rule: only the user merges.
 
@@ -75,6 +93,10 @@ Acceptance: backend tested against a mocked server (success and timeout); a 2-ho
 
 (Evidence and README follow as pipeline steps 6 and 7: latency table from the bot's own logs, the calibration result, and an honest note that a short-horizon bot is expected to lose its fees unless the model has real edge.)
 
+### Milestone 8: Maker strategy
+Goal: `STRATEGY=maker` as decided above: REST book poll and trades feed, the richer prompt (draft for the user), post-only quotes one tick inside the touch replaced only on change, paper maker fills from real prints, dashboard and reconcile working for resting orders and maker fees.
+Acceptance: tests for quote pricing (inside the touch, one-tick spread), replace-only-on-change, cap forcing the other side, post-only rejection, partial fills, cancel-all on stale, kill and shutdown, the order-action cap; a 30-minute maker dry run with no errors; a 1-hour live testnet maker run at minimum size whose fills reconcile with the exchange, with resting orders visible in the testnet UI and the kill switch cancelling them.
+
 ## Out of scope
 
-Mainnet (any use); withdrawals or transfers; multiple markets at once; post-only/maker strategy; public deployment of the dashboard; backtesting; training the decider.
+Mainnet (any use); withdrawals or transfers; multiple markets at once; public deployment of the dashboard; backtesting; training the decider.
