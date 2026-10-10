@@ -8,7 +8,8 @@ with a full snapshot, so a reconnect or a restart reloads history from SQLite.
 
 `live`, if given, is a callable returning
 {"mid": float | None, "feed": str, "kill_reason": str | None, "stopped": bool,
-"paused": bool}.
+"paused": bool}, plus "maker" (MakerTrader.maker_view(): the resting quote, the action
+counter) when the maker strategy runs.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from .store import Store
 HOST = "127.0.0.1"
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})  # Host header (DNS-rebinding guard)
 HISTORY_DECISIONS = 300  # about 26 minutes at one decision per 5.3 s
+HISTORY_DECISIONS_MAKER = 1800  # about 30 minutes at the maker's one decision per second
 HISTORY_FILLS = 100
 RETRY_MS = 2000
 HEADLINE_FIRST = (60, 30, 300)
@@ -117,6 +119,7 @@ def build_summary(store: Store, live: dict | None) -> dict:
             {**r, "bins": [asdict(b) for b in r["bins"]]}
             for r in (horizon_report(store, h) for h in HEADLINE_FIRST)
         ],
+        "maker": live.get("maker") if live else None,
         "feed": live["feed"] if live else "offline",
         "stopped": bool(live["stopped"]) if live else False,
         "kill": (
@@ -132,15 +135,20 @@ def build_summary(store: Store, live: dict | None) -> dict:
 
 
 def build_snapshot(store: Store, live: dict | None) -> dict:
-    decisions = [dict(r) for r in store.recent_decisions(HISTORY_DECISIONS)]
+    maker = bool(live and live.get("maker") is not None)
+    n = HISTORY_DECISIONS_MAKER if maker else HISTORY_DECISIONS
+    decisions = [dict(r) for r in store.recent_decisions(n)]
     fills = [dict(r) for r in store.recent_fills(HISTORY_FILLS)]
-    return {
+    snap = {
         "summary": build_summary(store, live),
         "decisions": decisions,
         "fills": fills,
         "last_decision_id": decisions[-1]["id"] if decisions else 0,
         "last_fill_id": fills[-1]["id"] if fills else 0,
     }
+    if maker:
+        snap["history_decisions"] = n  # the page keeps this many (logic.js)
+    return snap
 
 
 def _build_off_loop(build, db_path: str, live: dict | None) -> dict:

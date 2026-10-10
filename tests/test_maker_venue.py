@@ -298,3 +298,13 @@ def test_paper_quote_oids_are_negative_and_unique(paper):
     b = ex.place_quote("buy", Decimal("1"), Decimal("101"), book(), 10.0).oid
     assert a < 0 and b < 0 and a != b
     assert ex.rate_budget() is None  # paper has no address budget
+
+
+def test_paper_quote_oids_never_collide_with_paper_fill_ids(paper):
+    ex, store = paper
+    ioc = ex.open(book(), "buy", 200.0, 1.0)  # a paper IOC fill: oid = tid
+    oid = ex.place_quote("buy", Decimal("1"), Decimal("101"), book(), 10.0).oid
+    (f,) = ex.match_prints([prt(1, "sell", 99.0)])
+    ids = [r["oid"] for r in store.fills()]
+    assert oid not in {x["tid"] for x in ioc} and len(set(ids)) == len(ids) == 2
+    assert f["tid"] != oid

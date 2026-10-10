@@ -23,13 +23,16 @@
   // appended only if newer than what we hold, so a repeated event is harmless.
   function applyEvent(state, name, data) {
     if (name === "snapshot") {
+      // the maker decides about once a second, so its snapshot asks for a longer history
+      if (data.history_decisions) state.history = data.history_decisions;
+      else delete state.history;
       state.summary = data.summary;
-      state.decisions = data.decisions.slice(-MAX_DECISIONS);
+      state.decisions = data.decisions.slice(-(state.history || MAX_DECISIONS));
       state.fills = data.fills.slice(-MAX_FILLS);
     } else if (name === "decision") {
       if (data.id > lastId(state.decisions)) {
         state.decisions.push(data);
-        if (state.decisions.length > MAX_DECISIONS) state.decisions.shift();
+        if (state.decisions.length > (state.history || MAX_DECISIONS)) state.decisions.shift();
       }
     } else if (name === "fill") {
       if (data.id > lastId(state.fills)) {

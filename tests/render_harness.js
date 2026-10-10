@@ -40,7 +40,9 @@ function rows(id) { return els[id]._body.children.map(tr => tr.children.map(td =
 function collect() {
   const out = { pnl: dl("pnl"), counts: dl("counts"), decision: dl("decision"), brier: rows("brier"),
     arcs: {}, notes: {}, texts: {},
-    kill: [els["chip-kill"].textContent, els["chip-kill"].className] };
+    kill: [els["chip-kill"].textContent, els["chip-kill"].className],
+    maker: dl("maker"), makerHidden: els["maker-card"].hidden === true,
+    midTexts: els["mid-chart"].texts };
   IDS.filter(i => i.startsWith("rel-chart")).forEach(i => {
     out.arcs[i] = els[i].arcs; out.texts[i] = els[i].texts;
   });

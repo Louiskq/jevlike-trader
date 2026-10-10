@@ -58,7 +58,6 @@ class PaperExchange:
         self._min_notional = min_notional
         self._next_tid = store.min_tid() - 1
         self._quote: _Quote | None = None
-        self._next_oid = -1
 
     def open(self, book: Book, side: str, usd: float, ts: float) -> list[dict]:
         """Entry: IOC for a target notional (rounded up one lot to meet the minimum)."""
@@ -85,8 +84,8 @@ class PaperExchange:
         bid, ask = Decimal(str(book.bids[0][0])), Decimal(str(book.asks[0][0]))
         if (px >= ask) if side == "buy" else (px <= bid):
             return QuoteAck("rejected", None, f"post only would have matched, bbo {bid}@{ask}")
-        oid = self._next_oid
-        self._next_oid -= 1
+        oid = self._next_tid  # one counter for paper tids and quote oids: never the same id
+        self._next_tid -= 1
         self._quote = _Quote(oid, side, px, sz, ts)
         return QuoteAck("placed", oid)
 
