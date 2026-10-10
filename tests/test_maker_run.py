@@ -88,9 +88,37 @@ def test_a_broken_trades_stream_is_logged_and_the_run_goes_on():
     assert any("bad stream" in e["detail"] for e in store.events() if e["kind"] == "trades_error")
 
 
+def test_main_wires_the_book_pollers_rate_limit_to_the_maker(tmp_path, monkeypatch):
+    _env(monkeypatch, key=False, addr=False)
+    monkeypatch.setenv("STRATEGY", "maker")
+    monkeypatch.setenv("MAX_POSITION_USD", "15")
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
+
+    async def rest(*a, on_rate_limit, **k):
+        yield mkbook(recv_ts=time.time())
+        await asyncio.sleep(0.05)
+        on_rate_limit(RuntimeError("HTTP Error 429: Too Many Requests"))
+        for _ in range(2):
+            yield mkbook(recv_ts=time.time())
+            await asyncio.sleep(0.05)
+
+    async def trades(*a, **k):
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(run_mod, "poll_books", rest)
+    monkeypatch.setattr(run_mod, "stream_trades", trades)
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
+    run_mod.main(["--db", str(tmp_path / "m.db"), "--seconds", "1"])
+    store = Store(str(tmp_path / "m.db"))
+    assert [e for e in store.events() if e["kind"] == "rate_limited"]
+    assert [d["reason"] for d in store.decisions()][1:] == ["rate_paused"] * 2
+
+
 def test_open_feed_and_trades_for_the_maker(monkeypatch):
     seen = {}
-    monkeypatch.setattr(run_mod, "poll_books", lambda coin, clock, **kw: seen.update(poll=coin))
+    monkeypatch.setattr(run_mod, "poll_books",
+                        lambda coin, clock, **kw: seen.update(poll=coin, limit=kw["on_rate_limit"]))
     monkeypatch.setattr(run_mod, "stream_trades", lambda coin, clock, **kw: seen.update(kw))
 
     def boom(*a, **k):
@@ -98,9 +126,11 @@ def test_open_feed_and_trades_for_the_maker(monkeypatch):
 
     monkeypatch.setattr(run_mod, "stream_books", boom)
     cfg = Config(strategy="maker", feed_ping_s=2.5, feed_dead_s=3.5)
-    run_mod.open_feed(cfg, lambda k, d: None)
+    limit = print
+    run_mod.open_feed(cfg, lambda k, d: None, limit)
     run_mod.open_trades(cfg, lambda k, d: None)
     assert seen["poll"] == "BTC" and (seen["ping_s"], seen["dead_s"]) == (2.5, 3.5)
+    assert seen["limit"] is limit
 
 
 def test_main_maker_dry_run_uses_rest_books_and_the_trades_stream(tmp_path, monkeypatch, capsys):

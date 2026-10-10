@@ -5,6 +5,7 @@ captures (2026-10-10); other users' addresses in the trades are replaced by plac
 import asyncio
 import copy
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -212,6 +213,28 @@ def test_rest_error_logged_and_no_book_yielded():
     assert book.recv_ts == 2.0  # the third read, two slots later
     assert [k for k, _ in events] == ["rest_error", "rest_error"]
     assert "dns" in events[0][1]
+
+
+def test_rest_rate_limit_is_reported_to_on_rate_limit():
+    sched = Sched()
+    err = urllib.error.HTTPError("https://example.invalid/info", 429, "Too Many Requests", {},
+                                 None)
+    answers = iter([OSError("dns"), err, REST])
+    limited = []
+
+    def fetch(coin):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    async def go():
+        async for b in poll_books("BTC", lambda: sched.t, fetch=fetch, sleep=sched.sleep,
+                                  monotonic=sched, on_rate_limit=limited.append):
+            return b
+
+    assert run(go()).recv_ts == 2.0
+    assert limited == [err]  # the 429 only, not the DNS failure
 
 
 # ---- the trades stream ----

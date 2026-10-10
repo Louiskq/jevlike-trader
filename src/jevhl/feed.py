@@ -215,12 +215,14 @@ async def poll_books(
     sleep: Callable = asyncio.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     on_event: Callable[[str, str], None] = lambda kind, detail: None,
+    on_rate_limit: Callable[[Exception], None] = lambda e: None,
 ) -> AsyncIterator[Book]:
     """Yield a REST book about every every_s, forever. Reads start on a fixed schedule, one at
     a time: a read (or a consumer) that overruns skips the missed slots instead of catching up
     in a burst, so there is never more than one read per every_s (SPEC hard constraint). A
     failed read or a bad response is reported as `rest_error` and yields nothing; a long
-    outage is the stale-book kill's job."""
+    outage is the stale-book kill's job. An HTTP 429 is also passed to on_rate_limit (the
+    maker cancels and pauses quoting on it)."""
     slot = monotonic()
     while True:
         t0 = monotonic()
@@ -230,6 +232,8 @@ async def poll_books(
             book = parse_l2book(data, coin, clock())
         except Exception as e:  # any failure: skip this read (CancelledError is not caught)
             on_event("rest_error", f"{type(e).__name__}: {e}")
+            if getattr(e, "code", None) == 429:  # urllib's HTTPError
+                on_rate_limit(e)
         if book is not None:
             yield replace(book, read_ms=(monotonic() - t0) * 1000)
         now = monotonic()

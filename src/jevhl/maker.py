@@ -17,7 +17,9 @@ on tid), the kill switch, the M6 flatten retry and the M7 stale pause. The maker
   cancels leave two slots free (a stop's cancel and close); a stop or rate-limit order is never
   dropped, but waits for a slot if the window is full (see _flatten_once for the one bounded
   exception);
-- a rate-limit error cancels, counts as an order error and pauses quoting for RATE_PAUSE_S;
+- a rate-limit error cancels and pauses quoting for RATE_PAUSE_S: on a quote or cancel (counted
+  as an order error), and on the book poll, open orders, fills or address-budget reads (not an
+  order error);
 - live, fills are polled every MAKER_FILL_POLL_S and the open orders re-read every
   ORDERS_RECONCILE_S (a modify's reply is unverified: after an unclear answer the quote is
   "unknown" until the open orders are re-read);
@@ -148,6 +150,7 @@ class MakerTrader(Trader):
         self._quote: Quote | str | None = None
         self._actions: list[float] = []  # order actions sent, for the per-minute cap
         self.rate_paused_until = 0.0
+        self._book_limited: Exception | None = None  # a 429 on the book poll, handled next book
         self._mids: deque[tuple[float, float]] = deque()
         self._last_scored: tuple | None = None  # the book of the last scored decision
         self._score_ids: dict[int, float] = {}  # decision id -> ts, outcomes resolved for these
@@ -172,8 +175,19 @@ class MakerTrader(Trader):
 
     # ---- per book ----
 
+    def on_book_rate_limited(self, e: Exception) -> None:
+        """The book poller got an HTTP 429: no quotes from now on, and the cancel and the
+        RATE_PAUSE_S pause follow at the next book (the poller cannot wait for a cancel; if no
+        book comes, the stale pause cancels instead)."""
+        self.rate_paused_until = max(self.rate_paused_until, self._clock() + RATE_PAUSE_S)
+        self._book_limited = e
+
     async def on_book(self, book: Book) -> None:
         if not self.stopped:
+            if self._book_limited is not None:
+                e, self._book_limited = self._book_limited, None
+                async with self._lock:
+                    await self._rate_limited_locked(e, order=False)
             if (self._quote == UNKNOWN and self._executor.live and not self._blocked()
                     and self._clock() >= self._reread_at):
                 await self._reread_unknown()
@@ -318,7 +332,7 @@ class MakerTrader(Trader):
                     ack = await self._run(ex.modify_quote, q.oid, side, sz, px, book,
                                           self._clock())
             except RateLimited as e:
-                await self._rate_limited_locked(e)
+                await self._rate_limited_locked(e, order=True)
                 return
             except Exception as e:  # it may or may not rest: re-read before the next quote
                 self._order_failed(e, "quote")
@@ -357,7 +371,7 @@ class MakerTrader(Trader):
         try:
             self._apply(await self._run(self._executor.sync_fills))
         except Exception as e:
-            self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
+            await self._read_failed_locked(e)
 
     def _apply(self, fills: list[dict]) -> list[dict]:
         """Book fills; a fill of the tracked quote lowers what still rests."""
@@ -396,14 +410,25 @@ class MakerTrader(Trader):
             await self._sleep(wait)
         self._note_action()
 
-    async def _rate_limited_locked(self, e: Exception) -> None:
-        """Rate limited: count it as an order error (three in a row stop the bot), cancel the
-        quote and send no quotes for RATE_PAUSE_S. No flatten (user decision 2026-10-10)."""
-        self._kill.on_order_result(False)
+    async def _rate_limited_locked(self, e: Exception, *, order: bool) -> None:
+        """Rate limited: cancel the quote and send no quotes for RATE_PAUSE_S. No flatten (user
+        decision 2026-10-10). A refused order action also counts as an order error (three in a
+        row stop the bot, Q5); a refused read does not: it is not an order, and three slow
+        reads should pause quoting, not stop the bot for good."""
+        if order:
+            self._kill.on_order_result(False)
         self.rate_paused_until = self._clock() + RATE_PAUSE_S
         self.store.log_event(self._clock(), "rate_limited",
                              f"{e}; cancelling, no quotes for {RATE_PAUSE_S:g} s")
         await self._cancel_all_locked("rate limit")
+
+    async def _read_failed_locked(self, e: Exception, what: str = "") -> None:
+        """A read failed (caller holds the lock): a rate limit (HTTP 429) cancels and pauses
+        quoting, anything else is logged."""
+        if getattr(e, "status_code", None) == 429:  # the SDK's ClientError
+            await self._rate_limited_locked(e, order=False)
+        else:
+            self.store.log_event(self._clock(), "sync_error", f"{what}{type(e).__name__}: {e}")
 
     async def _cancel_all_locked(self, why: str) -> None:
         """Cancel every resting order on the coin (caller holds the lock). The orders are read
@@ -448,8 +473,7 @@ class MakerTrader(Trader):
                 try:
                     self.budget = await self._run(self._executor.rate_budget)
                 except Exception as e:
-                    self.store.log_event(self._clock(), "sync_error",
-                                         f"budget: {type(e).__name__}: {e}")
+                    await self._read_failed_locked(e, "budget: ")
                     return
                 self.store.log_event(self._clock(), "address_budget",
                                      f"{self.budget['used']}/{self.budget['cap']}")
@@ -471,7 +495,7 @@ class MakerTrader(Trader):
         try:
             orders = await self._run(self._executor.open_quotes)
         except Exception as e:
-            self.store.log_event(self._clock(), "sync_error", f"orders: {type(e).__name__}: {e}")
+            await self._read_failed_locked(e, "orders: ")
             return
         if self.stopped:
             return
@@ -491,8 +515,11 @@ class MakerTrader(Trader):
             try:
                 await self._run(self._executor.cancel_oids, strays)
             except Exception as e:
-                self.store.log_event(self._clock(), "cancel_error",
-                                     f"strays {strays}: {type(e).__name__}: {e}")
+                if getattr(e, "status_code", None) == 429:  # an order action: Q5 applies
+                    await self._rate_limited_locked(e, order=True)
+                else:
+                    self.store.log_event(self._clock(), "cancel_error",
+                                         f"strays {strays}: {type(e).__name__}: {e}")
                 return
             self.store.log_event(self._clock(), "stray_order", f"cancelled {strays}")
         if mine is not None:
@@ -542,7 +569,7 @@ class MakerTrader(Trader):
             try:
                 orders = await self._run(self._executor.open_quotes)
             except Exception as e:
-                self.store.log_event(self._clock(), "sync_error", f"{type(e).__name__}: {e}")
+                await self._read_failed_locked(e)
                 return False
         if orders:
             self.store.log_event(self._clock(), "orders_resting", f"{len(orders)} at resume")

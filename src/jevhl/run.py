@@ -110,11 +110,12 @@ def strategy_warning(store: Store, cfg: Config) -> str | None:
             f"for STRATEGY={cfg.strategy}")
 
 
-def open_feed(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncIterator[Book]:
+def open_feed(cfg: Config, on_event: Callable[[str, str], None],
+              on_rate_limit: Callable[[Exception], None] = lambda e: None) -> AsyncIterator[Book]:
     """The book feed: the WS l2Book for the taker, a REST read about every second for the
-    maker."""
+    maker (whose HTTP 429s go to on_rate_limit)."""
     if cfg.strategy == "maker":
-        return poll_books(cfg.coin, time.time, on_event=on_event)
+        return poll_books(cfg.coin, time.time, on_event=on_event, on_rate_limit=on_rate_limit)
     return stream_books(cfg.coin, time.time, on_event=on_event,
                         ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
 
@@ -393,18 +394,23 @@ def main(argv: list[str] | None = None) -> None:
 
     traders: list[Trader] = []
 
+    def on_rate_limit(e: Exception) -> None:  # the maker's book poller got an HTTP 429
+        for t in traders:
+            if isinstance(t, MakerTrader):
+                t.on_book_rate_limited(e)
+
     async def go() -> Trader:
         if args.dashboard:
             def announce(port: int) -> None:  # only once the server is really listening
                 print(f"dashboard: http://127.0.0.1:{port}/ (Ctrl-C to stop)", flush=True)
 
             return await dry_run_with_dashboard(
-                cfg, args.db, store, meta, open_feed(cfg, on_event),
+                cfg, args.db, store, meta, open_feed(cfg, on_event, on_rate_limit),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
                 on_trader=traders.append, executor=exchange, model=model, trades=trades,
             )
         return await dry_run(
-            cfg, store, meta, open_feed(cfg, on_event),
+            cfg, store, meta, open_feed(cfg, on_event, on_rate_limit),
             duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
             trades=trades,
         )

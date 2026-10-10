@@ -5,6 +5,7 @@ cancel-all on stale, kill and shutdown, the order-action cap, rate-limit pauses 
 changed-book scoring rule. Paper and the fake venue; clocks are injected, nothing waits."""
 
 import asyncio
+import urllib.error
 from dataclasses import replace
 from decimal import Decimal
 
@@ -13,7 +14,7 @@ import pytest
 from fake_hl import HTTP429, FakeHL
 from jevhl.config import Config
 from jevhl.exchange import Exchange
-from jevhl.feed import Book, Print
+from jevhl.feed import Book, Print, poll_books
 from jevhl.ledger import Ledger
 from jevhl.maker import UNKNOWN, MakerTrader, Quote, without_own
 from jevhl.paper import PaperExchange
@@ -756,6 +757,123 @@ def test_three_rate_limit_errors_trip_order_error_kill():
     for i in range(3):
         tick(tr, clock, T0 + 61 * i)
     assert tr.stopped and tr.kill_reason == "order_errors"
+
+
+def rest_l2book(bid=65000.0, ask=65003.0):
+    return {"coin": "BTC", "time": int(T0 * 1000), "levels": [
+        [{"px": str(bid - i), "sz": "5.0", "n": 1} for i in range(20)],
+        [{"px": str(ask + i), "sz": "5.0", "n": 1} for i in range(20)]]}
+
+
+def once(exc, real):
+    """Raise exc at the first call, then behave as real."""
+    calls = []
+
+    def f(*a, **k):
+        calls.append(a)
+        if len(calls) == 1:
+            raise exc
+        return real(*a, **k)
+
+    return f
+
+
+def test_a_rate_limited_book_read_cancels_and_pauses_quoting():
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    err = urllib.error.HTTPError("https://example.invalid/info", 429, "Too Many Requests", {},
+                                 None)
+    answers = iter([err, rest_l2book()])
+
+    def fetch(coin):
+        a = next(answers)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    async def nosleep(s):
+        clock.t += s
+
+    async def go():
+        clock.t = T0 + 1
+        async for book in poll_books("BTC", clock, fetch=fetch, sleep=nosleep, monotonic=clock,
+                                     on_rate_limit=tr.on_book_rate_limited):
+            await tr.on_book(book)
+            return
+
+    run(go())
+    assert len(events(store, "rate_limited")) == 1 and fake.resting == []
+    assert store.decisions()[-1]["reason"] == "rate_paused"
+    assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 62)
+    assert tr._kill._errors == 0  # a read is not an order: no order error
+
+
+class PollerLimitedWhileThinking(StubModel):
+    """The book poller is refused (HTTP 429) while the model is thinking."""
+
+    def __init__(self, tr, **kw):
+        super().__init__(**kw)
+        self.tr = tr
+
+    def predict(self, inp):
+        self.tr.on_book_rate_limited(RuntimeError("HTTP Error 429: Too Many Requests"))
+        return super().predict(inp)
+
+
+def test_a_book_rate_limit_stops_a_quote_already_decided():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    tr._model = PollerLimitedWhileThinking(tr, p=0.2)
+    tick(tr, clock, T0 + 1)  # the model wants a sell, but the poller was refused meanwhile
+    assert calls(fake, "modify") == [] and events(store, "quote_skipped")
+    assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 61)
+
+
+@pytest.mark.parametrize("read", ["orders", "fills", "budget"])
+def test_a_rate_limited_read_cancels_and_pauses_but_is_not_an_order_error(read):
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    for i in range(3):  # three in a row do not stop the bot: reads are not order errors
+        if read == "orders":
+            fake.open_orders = once(HTTP429(), FakeHL.open_orders.__get__(fake))
+            tr._last_reconcile = 0.0
+        elif read == "fills":
+            fake.fail_fills = [HTTP429()]
+            tr._last_poll = 0.0
+        else:
+            fake.user_rate_limit = once(HTTP429(), FakeHL.user_rate_limit.__get__(fake))
+            tr._last_budget = 0.0
+        tick(tr, clock, T0 + 1 + 20 * i)
+        assert len(events(store, "rate_limited")) == i + 1 and fake.resting == []
+        assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 61 + 20 * i)
+        assert store.decisions()[-1]["reason"] == "rate_paused"
+        assert tr._kill._errors == 0
+        no_polls(tr, clock)
+    assert not tr.stopped
+
+
+def test_a_rate_limited_stray_cancel_counts_as_an_order_error():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    fake.resting.append(dict(STRAY))
+    fake.fail_cancel = [HTTP429()]
+    tick(tr, clock, T0 + 15)
+    assert len(events(store, "rate_limited")) == 1 and tr._kill._errors == 1
+    assert fake.resting == []  # the rate-limit cancel took the stray and our quote
+
+
+def test_a_rate_limited_open_orders_read_at_resume_pauses_quoting():
+    tr, store, clock, fake, _ = make_live(cfg=replace(MCFG, resume_after_s=0))
+    tick(tr, clock, T0)
+    clock.t = T0 + 15.01
+    run(tr.check_stale())
+    fake.open_orders = once(HTTP429(), FakeHL.open_orders.__get__(fake))
+    tick(tr, clock, T0 + 20)  # the resume check's read is refused
+    assert tr.paused and len(events(store, "rate_limited")) == 1
+    assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 80)
 
 
 def test_address_budget_logged_every_minute():
