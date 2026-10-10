@@ -21,7 +21,7 @@ from jevhl.server import HISTORY_DECISIONS, HISTORY_DECISIONS_MAKER, build_snaps
 from jevhl.soak import MIN_DECISIONS_FOR_STUCK, mark_run_start, soak_report
 from jevhl.store import Store
 from jevhl.trader import Trader
-from jevhl.types import Action, Decision
+from jevhl.types import Action, Decision, ModelInput
 from test_live_run import _env
 from test_maker import MCFG, SZ, make_live, mkbook, tick
 from test_trader import T0, Clock, StubModel
@@ -64,14 +64,34 @@ def test_maker_dry_run_end_to_end_with_fake_feeds():
 
 
 def test_taker_is_the_default_and_unchanged():
+    """The real guarantee is the unchanged taker suite; this pins what the maker work touched:
+    the taker's model input (its own type, raw book mids in the recent mids) and stored mids."""
     clock = Clock()
     store = Store(":memory:")
-    tr = asyncio.run(dry_run(Config(), store, BTC, books_at(clock, 3, step=5.3),
-                             model=StubModel(0.9), clock=clock))
+    bids = [65000.0, 65010.0, 64990.0]
+
+    async def books():
+        for i, bid in enumerate(bids):
+            clock.t = T0 + i * 5.3
+            yield mkbook(bid=bid, ask=bid + 3, recv_ts=clock.t)
+            await asyncio.sleep(0.02)
+
+    inputs = []
+
+    class Recording(StubModel):
+        def predict(self, inp):
+            inputs.append(inp)
+            return super().predict(inp)
+
+    tr = asyncio.run(dry_run(Config(), store, BTC, books(), model=Recording(0.5), clock=clock))
     assert type(tr) is Trader
     assert [e["detail"] for e in store.events() if e["kind"] == "strategy"] == ["taker"]
     assert "maker" not in format_report(store, tr)
     assert "maker" not in trader_live(tr, clock)()
+    mids = [b + 1.5 for b in bids]
+    assert [type(i) for i in inputs] == [ModelInput] * 3
+    assert inputs[-1].recent_mids == mids and [d["mid"] for d in store.decisions()] == mids
+    assert tr.cfg.decision_deadline_s == 2.0
 
 
 def test_a_broken_trades_stream_is_logged_and_the_run_goes_on():

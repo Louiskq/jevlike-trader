@@ -510,11 +510,15 @@ def test_shutdown_cancels_resting_quote():
 
 
 def test_halt_cancel_is_never_blocked_by_the_cap():
+    """A stop's cancel is never dropped, and it is counted: with the window over the cap it
+    waits for a slot instead of going over."""
     tr, store, clock, fake, _ = make_live()
     tick(tr, clock, T0)
-    tr._actions = [clock.t] * 25  # well over the cap
+    tr._actions = [clock.t] * 25  # well over the cap (it cannot get there by itself)
     run(tr.shutdown())
     assert fake.resting == [] and calls(fake, "bulk_cancel")
+    assert clock.t >= T0 + 60  # it waited for the window to clear
+    assert tr.maker_view()["actions_last_min"] == 2  # the cancel and the flatten's close
 
 
 @pytest.mark.parametrize("how", ["halt", "pause"])
@@ -578,9 +582,15 @@ def flip(tr, clock, model, n, start=T0, step=1.0):
 def test_actions_capped_at_20_per_rolling_minute():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
-    flip(tr, clock, model, 25)  # every decision wants a new quote
-    assert len(quote_actions(fake)) == 18  # two of the 20 are kept for a stop's cancel and close
-    # capped at decisions 19, 21, 23 and 25; 20, 22 and 24 want the sell that still rests
+    tick(tr, clock, T0)
+    flip_from(tr, clock, model, 1, 4)  # every decision wants a new quote
+    fake.resting.append(dict(STRAY))
+    tr._last_reconcile = 0.0
+    flip_from(tr, clock, model, 5, 24)  # the stray is cancelled at T0+5: it counts too
+    assert calls(fake, "bulk_cancel")[0][1] == [{"coin": "BTC", "oid": 77}]
+    # 17 quotes and the stray cancel: two of the 20 are kept for a stop's cancel and close
+    assert len(quote_actions(fake)) == 18
+    # capped at T0+17, 19, 21 and 23; the even seconds want the buy that still rests
     assert len(events(store, "action_cap")) == 4
     assert tr.maker_view()["actions_last_min"] == 18
 
@@ -913,6 +923,27 @@ def test_held_decisions_without_p_up_do_not_reset_the_scored_book():
     assert [i for i in ids[:4] if store.outcomes(i)] == [ids[0], ids[3]]
 
 
+def test_live_scoring_keys_on_the_market_book_not_the_raw_one():
+    """Live, our own order changes the raw book; the market did not change, so the decisions
+    on it are not scored again."""
+    tr, store, clock, fake, _ = make_live()
+
+    def at(t, top_sz):  # the T0 book with one more bid level at 65001
+        clock.t = t
+        b = mkbook(recv_ts=t)
+        run(tr.on_book(replace(b, bids=[[65001.0, top_sz]] + b.bids)))
+
+    tick(tr, clock, T0)  # scored; our buy then rests at 65001
+    no_polls(tr, clock)
+    for i in range(1, 3):
+        at(T0 + i, SZ)  # changed only by our own order
+    at(T0 + 3, SZ + 0.5)  # someone joined us: changed
+    for i in range(33, 40):
+        at(T0 + i, SZ + 0.5)
+    ids = [d["id"] for d in store.decisions()]
+    assert [i for i in ids[:4] if store.outcomes(i)] == [ids[0], ids[3]]
+
+
 def test_maker_holds_are_stored_with_the_maker_gate():
     tr, store, clock, _ = make_paper()
     clock.t = T0 + 20
@@ -1064,6 +1095,13 @@ def test_decision_and_outcome_mids_exclude_our_own_quote():
     tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)
     (o30,) = store.outcomes(first["id"])
     assert o30["mid_future"] == 65001.5 and o30["label"] is None  # unchanged market: a tie
+    # after an unclear modify reply the quote is unknown: still never the raw mid
+    fake.modify_response = {"status": "ok", "response": {"type": "default"}}
+    tr._model = StubModel(p=0.2)
+    tick(tr, clock, T0 + 31, bid=65001.0, bid_sz=SZ)
+    assert tr.maker_view()["quote"] == "unknown"
+    tick(tr, clock, T0 + 32, bid=65001.0, bid_sz=SZ)
+    assert [d["mid"] for d in store.decisions()] == [65001.5] * 5
 
 
 def test_a_static_market_looks_static_to_the_model_with_our_quote_as_the_touch():
