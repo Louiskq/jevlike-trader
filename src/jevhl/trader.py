@@ -410,8 +410,11 @@ class Trader:
         cfg.flatten_retry_window_s (it bounds when an attempt may start, so the end can overrun
         by one attempt, about 43 s), each try re-reading the exchange's position and placing
         only reduce-only closes. The wait is an awaited sleep and the lock is free during it,
-        so cancelling the task (a Ctrl-C) ends it at once. One retry sequence per run: a later
-        flatten (shutdown after a kill) joins it, or makes a single attempt if it was spent."""
+        so cancelling the task (a Ctrl-C) ends it at once.
+        A flatten that gives up spends the window: later flattens make a single attempt until
+        a new pause resets it (so the window is per pause, not per run). Each flatten,
+        including the one a blocked resume runs from _settle when the position is not flat,
+        gets a full window while it is unspent."""
         async with self._flatten_lock:
             live = self._executor.live
             window = 0.0 if not live or self._retry_spent else self.cfg.flatten_retry_window_s
