@@ -775,3 +775,17 @@ def test_maker_latency_is_logged_with_rest_action_and_loop_times():
     assert first["rest"]["n"] == 1 and second["rest"]["max"] == 123.0
     assert second["action"]["n"] == 1
     assert second["loop"]["p50"] == pytest.approx(200.0)  # book received to quote sent
+
+
+def test_decision_and_outcome_mids_exclude_our_own_quote():
+    """Live, our quote sits one tick inside the touch and moves the raw mid toward our side
+    (which follows p_up): labels must use the market's mid without it."""
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)  # buy quote at 65001; market mid 65001.5
+    no_polls(tr, clock)
+    tick(tr, clock, T0 + 1, bid=65001.0, bid_sz=SZ)  # our bid is the touch: raw mid 65002.0
+    first, second = store.decisions()
+    assert first["mid"] == 65001.5 and second["mid"] == 65001.5
+    tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)
+    (o30,) = store.outcomes(first["id"])
+    assert o30["mid_future"] == 65001.5 and o30["label"] is None  # unchanged market: a tie

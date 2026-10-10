@@ -179,12 +179,14 @@ class MakerTrader(Trader):
             self.store.log_event(self._clock(), "maker_latency", json.dumps(self.latency_summary()))
 
     def _resolve_outcomes(self, book: Book) -> None:
-        """As the taker's, but only for the decisions chosen for scoring (see _mark_scored)."""
+        """As the taker's, but only for the decisions chosen for scoring (see _mark_scored),
+        and with the market's mid: our own quote removed, as for the decision's mid."""
+        mid = (self._seen(book) or book).mid
         for h in HORIZONS_S:
             lo = book.recv_ts - h - self.cfg.stale_s
             for row in self.store.pending(h, lo, book.recv_ts - h):
                 if row["id"] in self._score_ids:
-                    self.store.resolve(row["id"], h, book.mid)
+                    self.store.resolve(row["id"], h, mid)
         oldest = book.recv_ts - max(HORIZONS_S) - self.cfg.stale_s
         self._score_ids = {i: t for i, t in self._score_ids.items() if t >= oldest}
 
@@ -211,21 +213,24 @@ class MakerTrader(Trader):
         return without_own(book, self._quote, self._executor.meta)
 
     async def _decide(self, book: Book) -> None:
+        """Decisions store the market's mid (our own quote removed): live, our quote one tick
+        inside the touch moves the raw mid toward our side, which follows p_up, and would
+        bias the calibration labels."""
         cfg, ts = self.cfg, book.recv_ts
+        seen = self._seen(book) or book
         if self._clock() - ts > cfg.stale_s:
-            self.store.insert_decision(hold("stale", ts=ts, gate=self._gate), book.mid)
+            self.store.insert_decision(hold("stale", ts=ts, gate=self._gate), seen.mid)
             return
         if self._clock() < self.rate_paused_until:
-            self.store.insert_decision(hold("rate_paused", ts=ts, gate=self._gate), book.mid)
+            self.store.insert_decision(hold("rate_paused", ts=ts, gate=self._gate), seen.mid)
             return
-        seen = self._seen(book) or book
         inp = build_input(seen, list(self._mids), self.tape, list(self._recent), cfg.horizon_s)
         d = await self._ask(inp, ts)
         if self.stopped or self._kill.tripped:  # tripped while the model was thinking
             d = hold("killed", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
         elif self._paused:
             d = hold("paused", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
-        decision_id = self.store.insert_decision(d, book.mid)
+        decision_id = self.store.insert_decision(d, seen.mid)
         self._mark_scored(decision_id, d, seen)
         self.capped = d.reason == "capped"
         if d.action is Action.HOLD:  # late or invalid: the resting quote stays as it is
