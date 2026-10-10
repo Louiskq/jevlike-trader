@@ -57,3 +57,25 @@ class ModelInput:
 @dataclass(frozen=True)
 class ModelOutput:
     p_up: float
+
+
+@dataclass(frozen=True)
+class QuoteAck:
+    """The venue's answer to a post-only quote or a modify (milestone 8). status:
+    placed (resting, oid), rejected (post-only would have crossed), gone (the order to modify
+    was already filled or cancelled), filled (it took liquidity; should never happen for a
+    post-only order), unknown (a reply without an order status: re-read the open orders)."""
+
+    status: str
+    oid: int | None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class OpenQuote:
+    """One of our resting orders on the coin, as the venue reports it."""
+
+    oid: int
+    side: str
+    px: float
+    sz: float  # remaining

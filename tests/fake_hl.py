@@ -7,6 +7,17 @@ numbers and side "B"/"A"). No network, no key. Knobs let a test make the venue m
 from __future__ import annotations
 
 FEE_RATE = 0.00045
+MAKER_FEE_RATE = 0.00015
+ALO = {"limit": {"tif": "Alo"}}
+POST_ONLY_ERR = "Post only order would have immediately matched, bbo was {bid}@{ask}. asset=0"
+GONE_ERR = "Cannot modify canceled or filled order"
+
+
+class HTTP429(Exception):
+    """What the SDK raises for an HTTP 429 (its ClientError carries status_code)."""
+
+    status_code = 429
+    error_message = "Too Many Requests"
 
 
 class FakeHL:
@@ -31,6 +42,11 @@ class FakeHL:
         self.fail_cancel: list[Exception] = []
         self.fail_fills: list[Exception] = []  # popped one per user_fills_by_time call
         self._avg = 0.0  # average entry price of the open position, for closedPnl
+        # maker knobs (milestone 8)
+        self.modify_response: dict | None = None  # overrides the next modify response
+        self.fail_modify: list[Exception] = []
+        self.new_oid_on_modify = True  # a modify answers with a fresh oid (unverified on HL)
+        self.rate_limit = {"cumVlm": "1234.5", "nRequestsUsed": 321, "nRequestsCap": 11234}
 
     def _tick(self) -> int:
         self.now_ms += 1000
@@ -44,8 +60,10 @@ class FakeHL:
         if self.order_response is not None:
             resp, self.order_response = self.order_response, None
             return resp
+        if order_type == ALO:
+            return self._rest(name, is_buy, sz, limit_px)
         if order_type != {"limit": {"tif": "Ioc"}}:
-            return _err_status("only IOC supported by the fake")
+            return _err_status("only IOC and Alo supported by the fake")
         levels = self.asks if is_buy else self.bids
         want = sz
         if reduce_only:
@@ -73,7 +91,51 @@ class FakeHL:
             {"filled": {"totalSz": _s(taken), "avgPx": _s(notional / taken), "oid": oid}}
         ]}}}
 
-    def _record(self, oid, coin, is_buy, sz, px):
+    def _crosses(self, is_buy, px):
+        return px >= self.asks[0][0] if is_buy else px <= self.bids[0][0]
+
+    def _rest(self, name, is_buy, sz, px, oid=None):
+        if self._crosses(is_buy, px):
+            return _err_status(POST_ONLY_ERR.format(bid=self.bids[0][0], ask=self.asks[0][0]))
+        if oid is None:
+            oid = self.next_oid
+            self.next_oid += 1
+        self.resting.append({"coin": name, "side": "B" if is_buy else "A", "limitPx": _s(px),
+                             "sz": _s(sz), "oid": oid, "timestamp": self._tick(),
+                             "origSz": _s(sz)})
+        return {"status": "ok", "response": {"type": "order", "data": {"statuses": [
+            {"resting": {"oid": oid}}]}}}
+
+    def modify_order(self, oid, name, is_buy, sz, limit_px, order_type, reduce_only=False,
+                     cloid=None):
+        self.calls.append(("modify", oid, name, is_buy, sz, limit_px, order_type, reduce_only))
+        if self.fail_modify:
+            raise self.fail_modify.pop(0)
+        if self.modify_response is not None:
+            resp, self.modify_response = self.modify_response, None
+            return resp
+        old = [o for o in self.resting if o["oid"] == oid]
+        if not old:
+            return _err_status(GONE_ERR)
+        self.resting.remove(old[0])  # assumed: a crossing modify leaves no order behind
+        return self._rest(name, is_buy, sz, limit_px, None if self.new_oid_on_modify else oid)
+
+    def taker_hits(self, oid, sz):
+        """Someone trades against our resting order: a maker fill (crossed False)."""
+        (o,) = [o for o in self.resting if o["oid"] == oid]
+        left = float(o["sz"]) - sz
+        assert left > -1e-12, "hit larger than the order"
+        self._record(oid, o["coin"], o["side"] == "B", sz, float(o["limitPx"]), maker=True)
+        if left <= 1e-12:
+            self.resting.remove(o)
+        else:
+            o["sz"] = _s(left)
+
+    def user_rate_limit(self, user):
+        self.calls.append(("user_rate_limit", user))
+        return dict(self.rate_limit)
+
+    def _record(self, oid, coin, is_buy, sz, px, maker=False):
         sign = 1 if is_buy else -1
         pos = self.position
         closed = min(sz, abs(pos)) if pos * sign < 0 else 0.0
@@ -88,7 +150,8 @@ class FakeHL:
         self.raw_fills.append({
             "coin": coin, "px": _s(px), "sz": _s(sz), "side": "B" if is_buy else "A",
             "time": self._tick(), "startPosition": "0.0", "dir": "x", "closedPnl": _s(closed_pnl),
-            "hash": "0x0", "oid": oid, "crossed": True, "fee": _s(px * sz * FEE_RATE),
+            "hash": "0x0", "oid": oid, "crossed": not maker,
+            "fee": _s(px * sz * (MAKER_FEE_RATE if maker else FEE_RATE)),
             "tid": tid, "feeToken": "USDC",
         })
         self.raw_fills[-1]["_hidden_for"] = self.hide_polls
