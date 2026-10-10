@@ -51,7 +51,7 @@ Mainnet; withdrawals/transfers; multi-market; maker strategy; public dashboard; 
 
 The user kept all four choices and gave no rationale ("no reason").
 
-- **A feed outage over 15 s trips the stale-book kill switch and stops the bot.** Chosen: keep (alternative: hold and keep reconnecting). Rationale (user): none given.
+- **A feed outage over 15 s trips the stale-book kill switch and stops the bot.** Chosen: keep (alternative: hold and keep reconnecting). Rationale (user): none given. *Superseded in M7 / PR #15: a stale-book kill now flattens, pauses and may resume (see below).*
 - **An outcome at 30/60/300 s is recorded only if a book arrives within 15 s of the mark; otherwise the decision stays unscored.** Chosen: keep (alternative: use the first later book however late). Rationale (user): none given.
 - **A position left over at startup is rebuilt from the store and closed at the first book.** Chosen: keep (alternative: restore the original 60 s timers). Rationale (user): none given.
 - **Paper fills use a 4.5 bps taker fee and a 50 bps price band; reduce-only exits skip the $10 minimum.** Chosen: keep until M4 verifies them on testnet (alternative: different numbers or rules). Rationale (user): none given.
@@ -124,3 +124,22 @@ Decided by the orchestrator when the user said "make the decision for me" (not t
 > **M6 / PR #13: a second Ctrl-C waited for a blocked network thread; nothing printed during a retry.** Caught by: reviewer. Fix: c7fbd85 and 70f56d2. Prevention: `test_a_second_ctrl_c_mid_attempt_returns_at_once_and_says_the_position_may_be_open`, `test_each_failed_attempt_and_the_outcome_are_printed_to_stderr`.
 
 > **M6 / PR #13: deleting the KeyboardInterrupt handler passed all 547 tests.** Caught by: reviewer (break-it). Fix: 742df0f (tests only). Prevention: the two named SIGINT tests above.
+
+## M7 / PR #15: decisions
+
+Made at the review gate. The user gave no rationale ("no reason").
+
+- **A stale-book kill cancels, flattens, then pauses; the bot resumes after 60 s of steady books, at most 5 times per run; daily-loss and order-error kills stay permanent.** Requested by the user after the 2026-10-09 soak ("can you try fix it then"). Supersedes the M2 decision above. Rationale (user): none given.
+- **Fix R1 (drop a socket that answers pings but sends no book), R2 ("paused at the end" in the report) and R4 (docstring).** Chosen: fix R1, R2, R4 (alternatives: R1 only; all plus an end-to-end test). Rationale (user): none given.
+
+Decided by the builder, on evidence, and not chosen either way by the user: the gap bound before resuming is 8 s, not the brief's 2 s (soak.db shows books 5.2 s apart on average, up to 6.1 s). Each pause gets a fresh flatten retry window; a resume is blocked unless the ledger and the exchange are flat.
+
+## M7 / PR #15: caught mistakes
+
+> **M7 / PR #15: a socket that answered pings but sent no books was never dropped.** Caught by: reviewer. What: any message, a pong included, counted as proof of life, so a stalled subscription would pause the bot forever (one plausible shape of the 2026-10-09 incident); the test `test_any_message_after_a_ping_keeps_the_socket...` locked the bug in. Fix: 249bde6. Prevention: `test_a_pong_only_socket_is_dropped_and_reconnected_before_the_stale_pause` and the pong-only feed tests.
+
+> **M7 / PR #15: "(paused at the end)" could never print.** Caught by: reviewer. Fix: 2b47648. Prevention: `test_report_says_paused_at_the_end_after_a_run_stopped_while_paused`.
+
+> **M7 / PR #15: DECISIONS.md still described a permanent stale stop.** Caught by: reviewer. Fix: this entry and the note on the M2 decision.
+
+> **M7 / PR #15: two deliberate bugs passed every test.** Caught by: reviewer (break-it). What: the dashboard using the raw paused flag; deleting the stop re-check after the resume-time flatten. Fix: f441b58 (tests only). Prevention: `test_trader_live_shows_a_bot_stopped_while_paused_as_stopped_not_paused`, `test_a_stop_during_the_resume_time_flatten_ends_the_resume_before_any_position_read`.

@@ -4,9 +4,9 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 6 (flatten retry) PR #13 ready, waiting for merge; M4/M5 live acceptance still open
-- Next action: short-deadline late-hold check, then overnight soak with the real model; then step 6 evidence and step 7 README. Done: UI check of 4 fills, full 1 h live run (hour.db), loss-limit drill, accidental network-loss drill (see log). Still to confirm: .env.example MAX_POSITION_USD=15
-- Waiting on: user merge of PR #13 (M6); then live acceptance (short-deadline check, overnight soak with the real model per docs/soak.md)
+- Current milestone: 7 (feed recovery) PR #15 ready, waiting for merge
+- Next action: after merge: set up the bot on the user's VM (ssh vm: Oracle, Ubuntu 24.04 aarch64, 1 CPU, 5.8 GB; no uv yet), then overnight run with the real model; then step 6 evidence and step 7 README
+- Waiting on: user merge of PR #15
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -16,7 +16,8 @@
 | 3 | Dashboard | #3 | PR #9 | merged, v0.3 |
 | 4 | Testnet live orders | #4 | PR #10 | merged, v0.4; live acceptance pending |
 | 5 | Decider backend and soak | #5 | PR #11 | merged, v0.5; soak pending |
-| 6 | Flatten retry after network loss | #12 | PR #13 | at merge gate |
+| 6 | Flatten retry after network loss | #12 | PR #13 | merged, v0.6; live check pending |
+| 7 | Recover from a stalled feed | #14 | PR #15 | at merge gate |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -100,3 +101,6 @@
 - 2026-10-09: loss-limit drill passed (drill.db, MAX_DAILY_LOSS_USD=0.02): kill=daily_loss, flat, reconcile OK (9 fills, fees $0.043794, closedPnl $0.0214 both sides).
 - 2026-10-09: accidental network loss in the first drill (DNS failed ~2 min in): stale_book kill fired, no stale trades, but flatten failed twice and left a 0.00017 BTC short open; bot reported 'position UNKNOWN'. User closed it by hand in the UI. KNOWN LIMIT: no flatten retry after the network returns; note in README, ask user whether to fix. Fresh --db after a manual UI trade makes startup refuse (position differs from ledger): by design, reuse the db.
 - 2026-10-09: M6 (issue #12) built, reviewed (R1-R5), fixed R1-R4, R5 documented; PR #13 ready; decisions recorded (user: no reason; orchestrator decided fix-before-soak at user's request). Waiting for merge.
+- 2026-10-09: PR #13 merged (6506406); main verified (557 tests, ruff clean); v0.6 released.
+- 2026-10-09: short-deadline check passed (24/24 late holds, 0 fills). Real-model run (soak.db, job 7192991, tunnel to node address): 2 h of trading, 1423 decisions, latency p50 137 ms p90 407 ms p99 1241 ms, 11 late holds, Brier worse than baseline at all horizons, reconcile OK (114 fills); ended by a stale-book kill at 16:18 UTC (feed went quiet, no disconnect; ping after 20 s > stale 15 s).
+- 2026-10-10: M7 (issue #14) built, reviewed (R1-R4), fixed R1, R2, R4; R3 (DECISIONS.md) fixed by orchestrator; PR #15 ready; user: no reason. User wants the bot on their VM, not the MacBook (no reason given).
