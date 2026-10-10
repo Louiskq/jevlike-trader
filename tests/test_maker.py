@@ -397,6 +397,31 @@ def test_paper_print_through_the_quote_is_booked_by_the_trader():
     assert len(store.fills()) == 1
 
 
+class PrintsWhileThinking(StubModel):
+    """Prints arrive on the tape while the model is thinking (after the book's own match)."""
+
+    def __init__(self, tape, prints, **kw):
+        super().__init__(**kw)
+        self.tape, self.prints = tape, prints
+
+    def predict(self, inp):
+        out = super().predict(inp)
+        self.tape.add(self.prints, self.clock.t)
+        return out
+
+
+def test_paper_print_through_the_old_quote_just_before_a_modify_fills_it():
+    tr, store, clock, _ = make_paper()
+    tick(tr, clock, T0)  # buy quote at 65001
+    tr._model = PrintsWhileThinking(tr.tape, [Print(T0 + 1.2, T0 + 1.2, "sell", 65000.0, 1.0, 9)],
+                                    p=0.2, clock=clock, advance=0.3)
+    tick(tr, clock, T0 + 1)  # a sell through our bid at T0+1.2; the model flips to sell at 1.3
+    (f,) = store.fills()
+    assert (f["side"], f["sz"], f["px"]) == ("buy", SZ, 65001.0)  # the old quote filled
+    (q,) = tr._executor.open_quotes()
+    assert q.side == "sell"  # and the new quote went on as a fresh order
+
+
 def test_follow_trades_feeds_the_tape():
     tr, store, clock, _ = make_paper()
 

@@ -298,6 +298,8 @@ class MakerTrader(Trader):
             if view is None:  # unknown since the decision: re-read at the next book
                 return self._skip(decision_id, self._unseen_why())
             px = maker_price(side, view.bids[0][0], view.asks[0][0], meta)
+            if not ex.live:  # prints since the book's own match may have hit the old quote
+                self._match_tape()
             q = self._quote
             if q is not None and q.side == side and q.px == px:
                 return  # unchanged: keep the queue place
@@ -426,9 +428,7 @@ class MakerTrader(Trader):
         every MAKER_FILL_POLL_S, the open orders every ORDERS_RECONCILE_S and the address
         budget every BUDGET_EVERY_S."""
         if not self._executor.live:
-            prints, self._tape_cursor = self.tape.since(self._tape_cursor)
-            if prints and not self.stopped:
-                self._apply(self._executor.match_prints(prints))
+            self._match_tape()
             return
         now = self._clock()
         if now - self._last_poll >= MAKER_FILL_POLL_S:
@@ -453,6 +453,15 @@ class MakerTrader(Trader):
                     return
                 self.store.log_event(self._clock(), "address_budget",
                                      f"{self.budget['used']}/{self.budget['cap']}")
+
+    def _match_tape(self) -> None:
+        """Paper: fill the resting quote from the prints received since the last match. Run
+        at each book and again just before the quote is replaced, so a print that went through
+        the old price before the modify fills the old quote (the paper venue only matches
+        prints received after the resting quote was placed)."""
+        prints, self._tape_cursor = self.tape.since(self._tape_cursor)
+        if prints and not self.stopped:
+            self._apply(self._executor.match_prints(prints))
 
     async def _reconcile_locked(self) -> None:
         """Re-read our open orders (caller holds the lock). The tracked quote's remaining
