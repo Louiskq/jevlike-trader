@@ -70,8 +70,8 @@ Goal: real testnet orders with the mock at minimum size. `exchange` wrapper (pla
 Acceptance: an hour of live testnet trading; fills, position, fees and P&L match the Hyperliquid testnet UI exactly (reconciliation script plus user's check); low daily-loss limit fires kill switch and flattens; wifi-off drill holds and never trades on stale data; very short decider deadline logs late holds.
 
 ### Milestone 5: Decider backend and soak
-Goal: `MODEL=decider` over HTTP against `DECIDER_URL`; contract confirmed with the user then. Overnight unattended run.
-Acceptance: backend tested against a mocked server (success and timeout); overnight run with no crash and no growing memory; hold rate not stuck at 0% or 100%. Stop here.
+Goal: `MODEL=decider` over HTTP against `DECIDER_URL`; contract confirmed with the user then. Unattended run of at least 2 hours (user decision 2026-10-10: an overnight run is not needed for now).
+Acceptance: backend tested against a mocked server (success and timeout); a 2-hour unattended run with no crash and no growing memory; hold rate not stuck at 0% or 100%.
 
 (Evidence and README follow as pipeline steps 6 and 7: latency table from the bot's own logs, the calibration result, and an honest note that a short-horizon bot is expected to lose its fees unless the model has real edge.)
 
