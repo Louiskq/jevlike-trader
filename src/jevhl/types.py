@@ -25,7 +25,10 @@ HORIZONS_S = (30, 60, 300)
 
 REASONS = frozenset(
     {"signal", "below_gate", "blocked", "late", "stale", "cap_reached", "killed", "paused",
-     "invalid"}
+     "invalid",
+     # maker (milestone 8): the cap moved the quote to the other side; quoting paused after a
+     # rate-limit error
+     "capped", "rate_paused"}
 )
 
 
