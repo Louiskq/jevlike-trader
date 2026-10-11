@@ -10,6 +10,12 @@ separate database for live runs. Credentials come from the environment, e.g.
 Env: MODEL (mock|decider), DECIDER_URL, DECIDER_DEADLINE_S, COIN, GATE,
 MAX_POSITION_USD, MAX_DAILY_LOSS_USD, HL_API_KEY, HL_ACCOUNT_ADDRESS, ...
 (see config and .env.example). Testnet only.
+
+STRATEGY=maker (milestone 8) rests post-only quotes instead, deciding about once a second on a
+REST book plus the trades feed; MAKER_SIZE_USD (default 11) and MAKER_DECIDER_DEADLINE_S
+(default 1) apply. Use a separate --db per strategy (a warning says so otherwise), e.g.
+
+    STRATEGY=maker uv run python -m jevhl.run --seconds 1800 --db maker.db
 """
 
 from __future__ import annotations
@@ -25,9 +31,10 @@ from collections.abc import AsyncIterator, Callable
 from .calibration import all_horizon_reports
 from .config import Config
 from .exchange import FILL_OVERLAP_MS, Exchange, build_exchange
-from .feed import INFO_URL, Book, stream_books
+from .feed import INFO_URL, Book, Print, poll_books, stream_books, stream_trades
 from .latency import latency_report
 from .ledger import Ledger
+from .maker import MakerTrader
 from .model import MockModel, build_model
 from .paper import PaperExchange
 from .rounding import AssetMeta
@@ -69,11 +76,14 @@ def live_since_ms(store: Store, now_s: float) -> int:
     return int(newest * 1000) - FILL_OVERLAP_MS
 
 
-def prepare_live(store: Store, exchange: Exchange) -> None:
+def prepare_live(store: Store, exchange: Exchange, *, cancel_orders: bool = False) -> int:
     """Before trading live: book any fill the store missed (a crash, a UI trade), then refuse
-    to start unless the exchange's position matches the ledger rebuilt from the store."""
+    to start unless the exchange's position matches the ledger rebuilt from the store. The
+    maker (cancel_orders) first cancels any order a previous run left resting. Returns how
+    many orders were cancelled."""
     if any(r["tid"] < 0 for r in store.fills()):
         raise StartupError("this database holds paper fills: use a separate --db for live runs")
+    cancelled = exchange.cancel_all() if cancel_orders else 0
     for f in exchange.sync_fills():
         store.insert_fill(
             tid=f["tid"], oid=f["oid"], ts=f["ts"], coin=exchange.coin, side=f["side"],
@@ -86,11 +96,44 @@ def prepare_live(store: Store, exchange: Exchange) -> None:
             f"exchange position {on_exchange} differs from the ledger's {ledger.position}: "
             "close or reconcile it first (python -m jevhl.reconcile)"
         )
+    return cancelled
 
 
-def open_feed(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncIterator[Book]:
+def strategy_warning(store: Store, cfg: Config) -> str | None:
+    """A database last used by the other strategy (one with decisions but no `strategy`
+    event predates the maker, so it is the taker's)."""
+    used = [e["detail"] for e in store.events() if e["kind"] == "strategy"]
+    last = used[-1] if used else ("taker" if store.recent_decisions(1) else None)
+    if last is None or last == cfg.strategy:
+        return None
+    return (f"WARNING: this database was last used with STRATEGY={last}; use a separate --db "
+            f"for STRATEGY={cfg.strategy}")
+
+
+def open_feed(cfg: Config, on_event: Callable[[str, str], None],
+              on_rate_limit: Callable[[Exception], None] = lambda e: None) -> AsyncIterator[Book]:
+    """The book feed: the WS l2Book for the taker, a REST read about every second for the
+    maker (whose HTTP 429s go to on_rate_limit)."""
+    if cfg.strategy == "maker":
+        return poll_books(cfg.coin, time.time, on_event=on_event, on_rate_limit=on_rate_limit)
     return stream_books(cfg.coin, time.time, on_event=on_event,
                         ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
+
+
+def open_trades(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncIterator[list[Print]]:
+    """The maker's trades stream (its own socket, one subscription)."""
+    return stream_trades(cfg.coin, time.time, on_event=on_event,
+                         ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
+
+
+async def _follow_trades(trader: MakerTrader, trades: AsyncIterator[list[Print]], store: Store,
+                         clock: Callable[[], float]) -> None:
+    """Feed the maker's trade tape; a stream that breaks is logged and the bot goes on (its
+    paper fills and flow features are then blind, as during a trades-socket outage)."""
+    try:
+        await trader.follow_trades(trades)
+    except Exception as e:
+        store.log_event(clock(), "trades_error", f"{type(e).__name__}: {e}")
 
 
 async def _watchdog(trader: Trader, every_s: float = 1.0) -> None:
@@ -112,18 +155,25 @@ async def dry_run(
     executor=None,
     rss_every_s: float = 60.0,
     rss: Callable[[], int] = current_rss_kb,
+    trades: AsyncIterator[list[Print]] | None = None,
 ) -> Trader:
     """The trading run. executor: the live Exchange, or None for simulated (paper) fills.
-    Process memory is logged every rss_every_s seconds (and once at the end) for the soak report."""
-    trader = Trader(
+    Process memory is logged every rss_every_s seconds (and once at the end) for the soak report.
+    STRATEGY=maker runs the MakerTrader, fed by `trades` as well as the books."""
+    cls = MakerTrader if cfg.strategy == "maker" else Trader
+    trader = cls(
         cfg, store, model or MockModel(), executor or PaperExchange(store, meta, cfg.coin),
         Ledger.from_fills(store.fills()), kill_switch_from_store(cfg, store, clock), clock=clock,
     )
     mark_run_start(store, clock)
+    store.log_event(clock(), "strategy", cfg.strategy)
     if on_trader is not None:
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))
     sampler = asyncio.create_task(rss_sampler(store, clock, rss_every_s, rss))
+    tape = None
+    if isinstance(trader, MakerTrader) and trades is not None:
+        tape = asyncio.create_task(_follow_trades(trader, trades, store, clock))
     run = asyncio.ensure_future(trader.run(books))
     try:
         await asyncio.wait_for(asyncio.shield(run), duration_s)
@@ -140,7 +190,9 @@ async def dry_run(
         trader.stopped = True
         dog.cancel()
         sampler.cancel()
-        await asyncio.gather(sampler, return_exceptions=True)
+        if tape is not None:
+            tape.cancel()
+        await asyncio.gather(sampler, *([tape] if tape else []), return_exceptions=True)
         store.log_event(clock(), "rss", str(await asyncio.to_thread(rss)))
     return trader
 
@@ -155,8 +207,11 @@ def trader_live(trader: Trader, clock: Callable[[], float]) -> Callable[[], dict
         else:
             feed = "live" if clock() - book.recv_ts <= trader.cfg.stale_s else "stale"
             mid = book.mid
-        return {"mid": mid, "feed": feed, "kill_reason": trader.kill_reason,
-                "stopped": trader.stopped, "paused": trader.paused}
+        out = {"mid": mid, "feed": feed, "kill_reason": trader.kill_reason,
+               "stopped": trader.stopped, "paused": trader.paused}
+        if isinstance(trader, MakerTrader):
+            out["maker"] = trader.maker_view()
+        return out
 
     return live
 
@@ -178,6 +233,7 @@ async def dry_run_with_dashboard(
     executor=None,
     rss_every_s: float = 60.0,
     rss: Callable[[], int] = current_rss_kb,
+    trades: AsyncIterator[list[Print]] | None = None,
 ) -> Trader:
     """dry_run plus the dashboard on 127.0.0.1:port (0 = any free port) in the same event
     loop. If the kill switch stopped the trader, the dashboard stays up for linger_s seconds
@@ -211,7 +267,7 @@ async def dry_run_with_dashboard(
         trader = await dry_run(
             cfg, store, meta, books, model=model, clock=clock, duration_s=duration_s,
             on_trader=_both(traders.append, on_trader), executor=executor,
-            rss_every_s=rss_every_s, rss=rss,
+            rss_every_s=rss_every_s, rss=rss, trades=trades,
         )
         if trader.kill_reason and not server_task.done():
             await asyncio.wait({server_task}, timeout=linger_s)
@@ -272,11 +328,21 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
     lines.append(f"stale pauses {trader.stale_pauses}  resumes {trader.stale_resumes}"
                  + ("  (paused at the end)" if trader.ended_paused else ""))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
+    if isinstance(trader, MakerTrader):
+        for kind, s in trader.latency_summary().items():
+            lines.append(f"maker {kind} ms (n={s['n']}): p50 {_f(s['p50'], 1)}  "
+                         f"p90 {_f(s['p90'], 1)}  max {_f(s['max'], 1)}")
     if exchange is not None:
         try:
             lines.append(f"exchange position {exchange.position()} {exchange.coin} (should be 0)")
         except Exception as e:  # never hide the rest of the report
             lines.append(f"exchange position UNKNOWN ({type(e).__name__}): check it by hand")
+        if isinstance(trader, MakerTrader):
+            try:
+                n = len(exchange.open_quotes())
+                lines.append(f"open orders on {exchange.coin}: {n} (should be 0)")
+            except Exception as e:
+                lines.append(f"open orders UNKNOWN ({type(e).__name__}): check them by hand")
     if trader.flatten_unresolved:
         lines.append(GAVE_UP)
     return "\n".join(lines)
@@ -303,25 +369,35 @@ def main(argv: list[str] | None = None) -> None:
             if not value:
                 raise SystemExit(f"error: --live needs {name} (see .env.example)")
     store = Store(args.db)
+    if warning := strategy_warning(store, cfg):
+        print(warning, file=sys.stderr, flush=True)
     meta = fetch_meta(cfg.coin)
     exchange = None
     if args.live:
         exchange = build_exchange(cfg, meta, live_since_ms(store, time.time()))
         try:
-            prepare_live(store, exchange)
+            cancelled = prepare_live(store, exchange, cancel_orders=cfg.strategy == "maker")
         except StartupError as e:
             raise SystemExit(f"error: {e}") from None
+        if cancelled:
+            print(f"cancelled {cancelled} order(s) left resting by an earlier run", flush=True)
         if warning := live_size_warning(cfg):
             print(warning, file=sys.stderr, flush=True)
-        print(f"LIVE testnet orders, {cfg.coin}: max position ${cfg.max_position_usd:g}, "
-              f"max daily loss ${cfg.max_daily_loss_usd:g}", flush=True)
+        print(f"LIVE testnet orders, {cfg.coin}, STRATEGY={cfg.strategy}: max position "
+              f"${cfg.max_position_usd:g}, max daily loss ${cfg.max_daily_loss_usd:g}", flush=True)
 
     def on_event(kind: str, detail: str) -> None:
         store.log_event(time.time(), kind, detail)
 
     model = build_model(cfg)
+    trades = open_trades(cfg, on_event) if cfg.strategy == "maker" else None
 
     traders: list[Trader] = []
+
+    def on_rate_limit(e: Exception) -> None:  # the maker's book poller got an HTTP 429
+        for t in traders:
+            if isinstance(t, MakerTrader):
+                t.on_book_rate_limited(e)
 
     async def go() -> Trader:
         if args.dashboard:
@@ -329,13 +405,14 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"dashboard: http://127.0.0.1:{port}/ (Ctrl-C to stop)", flush=True)
 
             return await dry_run_with_dashboard(
-                cfg, args.db, store, meta, open_feed(cfg, on_event),
+                cfg, args.db, store, meta, open_feed(cfg, on_event, on_rate_limit),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
-                on_trader=traders.append, executor=exchange, model=model,
+                on_trader=traders.append, executor=exchange, model=model, trades=trades,
             )
         return await dry_run(
-            cfg, store, meta, open_feed(cfg, on_event),
+            cfg, store, meta, open_feed(cfg, on_event, on_rate_limit),
             duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
+            trades=trades,
         )
 
     try:

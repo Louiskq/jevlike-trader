@@ -14,7 +14,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from .config import Config
-from .prompt import OPTIONS, question_text, render_context
+from .prompt import OPTIONS, question_text, render_context, render_maker_context
 from .types import ModelInput, ModelOutput
 
 TOP_LEVELS = 10
@@ -95,9 +95,12 @@ class DeciderModel:
     predict() runs in a worker thread (see Trader._ask). timeout_s bounds each socket
     operation, so a hung server cannot keep the thread past about the deadline. abort() is
     called when the bot stops: it shuts the open socket so a request in flight ends at once.
+    render turns the input into the context text (the maker has its own draft prompt).
     """
 
-    def __init__(self, url: str, timeout_s: float):
+    def __init__(self, url: str, timeout_s: float,
+                 render: Callable[[ModelInput], str] = render_context):
+        self._render = render
         parts = urlsplit(url)
         self._host, self._port = parts.hostname, parts.port or 80
         self._timeout_s = timeout_s
@@ -118,7 +121,7 @@ class DeciderModel:
     def predict(self, inp: ModelInput) -> ModelOutput:
         question = question_text(inp.horizon_s)
         payload = json.dumps({
-            "context": render_context(inp),
+            "context": self._render(inp),
             "schema": {question: {"type": "choice", "options": list(OPTIONS)}},
         }).encode()
         conn = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout_s)
@@ -152,5 +155,6 @@ class DeciderModel:
 
 def build_model(cfg: Config) -> Model:
     if cfg.model == "decider":
-        return DeciderModel(cfg.decider_url, cfg.deadline_s)
+        render = render_maker_context if cfg.strategy == "maker" else render_context
+        return DeciderModel(cfg.decider_url, cfg.decision_deadline_s, render=render)
     return MockModel()

@@ -4,9 +4,9 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 7 (feed recovery) PR #15 ready, waiting for merge
-- Next action: after merge: set up the bot on the user's VM (ssh vm: Oracle, Ubuntu 24.04 aarch64, 1 CPU, 5.8 GB; no uv yet), then overnight run with the real model; then step 6 evidence and step 7 README
-- Waiting on: user merge of PR #15
+- Current milestone: 8 (maker strategy) PR #17 ready, waiting for merge
+- Next action: after merge: tag v0.8; 1-hour live maker run on the VM (needs model job + VM clifton cert); then step 6 evidence and step 7 README
+- Waiting on: user merge of PR #17
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -17,7 +17,8 @@
 | 4 | Testnet live orders | #4 | PR #10 | merged, v0.4; live acceptance pending |
 | 5 | Decider backend and soak | #5 | PR #11 | merged, v0.5; soak pending |
 | 6 | Flatten retry after network loss | #12 | PR #13 | merged, v0.6; live check pending |
-| 7 | Recover from a stalled feed | #14 | PR #15 | at merge gate |
+| 7 | Recover from a stalled feed | #14 | PR #15 | merged, v0.7; live check pending |
+| 8 | Maker strategy | #16 | PR #17 | at merge gate |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -104,3 +105,10 @@
 - 2026-10-09: PR #13 merged (6506406); main verified (557 tests, ruff clean); v0.6 released.
 - 2026-10-09: short-deadline check passed (24/24 late holds, 0 fills). Real-model run (soak.db, job 7192991, tunnel to node address): 2 h of trading, 1423 decisions, latency p50 137 ms p90 407 ms p99 1241 ms, 11 late holds, Brier worse than baseline at all horizons, reconcile OK (114 fills); ended by a stale-book kill at 16:18 UTC (feed went quiet, no disconnect; ping after 20 s > stale 15 s).
 - 2026-10-10: M7 (issue #14) built, reviewed (R1-R4), fixed R1, R2, R4; R3 (DECISIONS.md) fixed by orchestrator; PR #15 ready; user: no reason. User wants the bot on their VM, not the MacBook (no reason given).
+- 2026-10-10: PR #15 merged (dfce6d5); main verified (642 tests, ruff clean); v0.7 released.
+- 2026-10-10: bot moved to the user's VM (Oracle, Ubuntu 24.04 aarch64): 627 tests pass (15 node-only skipped), Linux RSS path works. .env copied by orchestrator at user's request (not opened). VM clifton cert valid to 03:12 UTC. Model job 7232911 (11 h, node address bind). VM smoke: latency p50 41 ms p90 59 ms, 0 late. Overnight live run started 15:19 UTC, 10 h, real model, $15 cap.
+- 2026-10-10: USER DECISION: no overnight run for now; a 2 h unattended run is enough ("its fine to not have an overnight run for now. if it works for say 2h its probably good"). Changes the SPEC M5 acceptance (overnight soak) and the PROBLEM.md 'unattended overnight run' criterion: amend SPEC and record in DECISIONS.md on the next branch; README must say the unattended run was 2 h.
+- 2026-10-10: 2 h unattended VM run DONE (overnight.db on VM, 15:19-17:21 UTC): 1365 decisions, 0 late, latency p50 41 ms p90 65 ms p99 289 ms max 956 ms; Brier 30/60/300 s 0.268/0.274/0.291 vs baseline 0.250/0.248/0.231 (model worse at all horizons); hold rate 64.9%; 114 fills, fees $0.550461, reconcile OK (closedPnl -$0.0478 both, flat); RSS quarters 70.0/70.3/70.5/70.6 MB (+0.6 MB over 2 h, flattening); 10 routine 'Expired' reconnects, 0 stale pauses; clean stop exit 130; GPU job cancelled, tunnel closed. M5 acceptance (2 h version) met.
+- 2026-10-10: M8 spec (f245791 -> rewritten), plan approved with user answers (scoring per changed book, paper fills through price, 1 s maker deadline; other defaults accepted). Built (836 tests, 74 break-it mutants caught); builder hit a usage limit once and was resumed. GitHub GH007 blocked the push (private email); USER chose the noreply address: repo-local user.email set to 102479386+Louiskq@users.noreply.github.com and the 9 unpushed commits re-authored (new hashes: spec 39cf663, fix df3d294, tests 38c2c79, build record 2c1e076). Draft PR #17; reviewer started.
+- 2026-10-10: M8 30-min maker paper dry run (pre-review code, mock model) PASSED: 1800 decisions, gap p50 1.00 s, 0 late, 0 errors, 442 quote actions (~14.7/min) with 318 action_cap events (mock flips near 0.5), 50 paper fills, fees $0.0740, REST book p50 228 ms, loop p50 3.5 ms, 2 trades-socket reconnects, clean stop. Review R1-R5: user chose fix all five; builder working.
+- 2026-10-11: M8 review fixes (a30df8e..cbc93d8) verified (863 tests, ruff clean), pushed; user: no reason; kept strict cap (18 quotes/min, stop waits); PR #17 ready, review trail posted.

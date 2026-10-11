@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MODELS = ("mock", "decider")
+STRATEGIES = ("taker", "maker")
 
 
 class ConfigError(ValueError):
@@ -89,6 +90,11 @@ class Config:
     resume_max_gap_s: float = 8.0
     stale_resumes_max: int = 5
     model: str = "mock"
+    # STRATEGY=maker (milestone 8): post-only quotes about once a second instead of IOC entries.
+    # The quote size is fixed; the maker's model deadline replaces deadline_s in maker mode.
+    strategy: str = "taker"
+    maker_size_usd: float = 11.0
+    maker_deadline_s: float = 1.0
     decider_url: str | None = None
     api_key: str | None = field(default=None, repr=False)
     # The MAIN account's public address (not the API wallet's): the API wallet only signs, and
@@ -105,6 +111,11 @@ class Config:
         decider_url = None
         if model == "decider":
             decider_url = parse_decider_url(env.get("DECIDER_URL", ""))
+        strategy = env.get("STRATEGY") or "taker"
+        maker = {}  # read (and checked) only for the maker: a leftover value never stops the taker
+        if strategy == "maker":
+            maker = {"maker_size_usd": _num(env, "MAKER_SIZE_USD", 11.0),
+                     "maker_deadline_s": _num(env, "MAKER_DECIDER_DEADLINE_S", 1.0)}
         cfg = cls(
             network=network,
             model=model,
@@ -121,11 +132,18 @@ class Config:
             resume_after_s=_num(env, "RESUME_AFTER_S", 60.0),
             resume_max_gap_s=_num(env, "RESUME_MAX_GAP_S", 8.0),
             stale_resumes_max=_whole(env, "STALE_RESUMES_MAX", 5),
+            strategy=strategy,
             api_key=env.get("HL_API_KEY") or None,
             account_address=env.get("HL_ACCOUNT_ADDRESS") or None,
+            **maker,
         )
         cfg.validate()
         return cfg
+
+    @property
+    def decision_deadline_s(self) -> float:
+        """The model's deadline for this strategy (the maker decides about once a second)."""
+        return self.maker_deadline_s if self.strategy == "maker" else self.deadline_s
 
     def validate(self) -> None:
         if self.account_address is not None and not _ADDRESS.fullmatch(self.account_address):
@@ -160,3 +178,13 @@ class Config:
             raise ConfigError("RESUME_AFTER_S must be finite and >= 0")
         if self.stale_resumes_max < 0:
             raise ConfigError("STALE_RESUMES_MAX must be >= 0")
+        if self.strategy not in STRATEGIES:
+            raise ConfigError(f"STRATEGY must be one of {STRATEGIES}, got {self.strategy!r}")
+        if self.strategy == "maker":  # unused, so never checked, for the taker
+            if not math.isfinite(self.maker_deadline_s) or self.maker_deadline_s <= 0:
+                raise ConfigError("MAKER_DECIDER_DEADLINE_S must be finite and positive")
+            if not math.isfinite(self.maker_size_usd):
+                raise ConfigError("MAKER_SIZE_USD must be finite")
+            if not self.min_notional_usd <= self.maker_size_usd <= self.max_position_usd:
+                raise ConfigError("MAKER_SIZE_USD must be between the minimum notional and "
+                                  "MAX_POSITION_USD")

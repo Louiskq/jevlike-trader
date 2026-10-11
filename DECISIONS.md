@@ -143,3 +143,30 @@ Decided by the builder, on evidence, and not chosen either way by the user: the 
 > **M7 / PR #15: DECISIONS.md still described a permanent stale stop.** Caught by: reviewer. Fix: this entry and the note on the M2 decision.
 
 > **M7 / PR #15: two deliberate bugs passed every test.** Caught by: reviewer (break-it). What: the dashboard using the raw paused flag; deleting the stop re-check after the resume-time flatten. Fix: f441b58 (tests only). Prevention: `test_trader_live_shows_a_bot_stopped_while_paused_as_stopped_not_paused`, `test_a_stop_during_the_resume_time_flatten_ends_the_resume_before_any_position_read`.
+
+## M8 / PR #17: decisions
+
+Made at the spec, plan and review gates (2026-10-10/11). The user gave no rationale ("no reason").
+
+- **A maker strategy as `STRATEGY=maker`, next to the unchanged taker.** Chosen over replacing the taker. Rationale (user): none given.
+- **About one decision a second; the quote is replaced only when its side or price changes.** Chosen after the measurement that testnet's book changes slowly (alternatives: replace every second; back to ~5 s). Rationale (user): none given.
+- **A Jarrod-style prompt, drafted by the assistant for the user to edit.** The prompt in `src/jevhl/prompt.py` is still the assistant's draft. Rationale (user): none given.
+- **Always quote buy or sell; hold only when the model is late or invalid.** Rationale (user): none given.
+- **Plan gate: score a maker decision only on a changed book; paper fills need a print through the quote price; maker decider deadline 1 s; the builder's other plan defaults accepted.** Rationale (user): none given.
+- **Fix all five review findings (R1-R5).** Rationale (user): none given.
+- **Keep the strict cap: quotes get 18 actions a minute and a stop waits rather than exceeding 20** (replaces the earlier accepted default that a stop may push a rare minute past 20). Rationale (user): none given.
+- **Git email for this repo set to the GitHub noreply address; the 9 unpushed commits re-authored** after GitHub blocked a push exposing the private address. Chosen over changing the GitHub setting. Rationale (user): none given.
+
+Decided by the builder, not chosen either way by the user: labels and the model's view use the book with our own quote removed; a book with our orders unknown gives no decision (`decision_skipped`); read rate limits pause quoting but are not order errors; inner retries inside one flatten attempt are not counted against the cap (bounded, documented in `_flatten_once`).
+
+## M8 / PR #17: caught mistakes
+
+> **M8 / PR #17: our own quote leaked into the model's input and labels.** Caught by: reviewer. What: recent mids and returns used the raw mid, and an unknown quote fell back to the raw book, so the model saw a fake move following its own last side and labels were biased against it. Fix: a30df8e. Prevention: `test_live_scoring_keys_on_the_market_book_not_the_raw_one` and the R1 tests.
+
+> **M8 / PR #17: the 20-actions-a-minute hard constraint could be broken.** Caught by: reviewer. What: a stray cancel used the reserved slot; stop cancels and flatten IOCs were not counted (22 actions in 20 s in a probe). Fix: 77eefcf. Prevention: `test_actions_capped_at_20_per_rolling_minute`, `test_halt_cancel_is_never_blocked_by_the_cap`.
+
+> **M8 / PR #17: paper missed adverse fills just before a modify; read rate limits only logged; maker settings could stop the taker.** Caught by: reviewer. Fix: 99ad80a, d17858b, 044713d.
+
+> **M8 / PR #17: three deliberate bugs passed every test** (stop cancel not counted, stray cancel not counted, scoring on the raw book). Caught by: reviewer (break-it). Fix: cbc93d8 (tests only).
+
+> **M8 / PR #17: decision mids included our own quote.** Caught by: builder during its own break-it pass. Fix: df3d294.

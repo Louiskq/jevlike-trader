@@ -125,3 +125,48 @@ def test_kill_chip_shows_paused_apart_from_tripped_and_ok():
     assert paused[0].startswith("kill switch: PAUSED (stale_book") and "TRIPPED" not in paused[0]
     assert paused[1] == "chip warn"
     assert tripped == ["kill switch: TRIPPED (stale_book), stopped", "chip bad"]
+
+
+# ---- maker panel (milestone 8) ----
+
+
+def maker(**kw):
+    m = {"quote": {"side": "buy", "px": 65001.0, "remaining": 0.00016, "oid": 1000,
+                   "age_s": 12.34},
+         "actions_last_min": 7, "actions_cap": 20, "rate_paused_until": None,
+         "budget": {"used": 321, "cap": 11234}, "capped": False}
+    m.update(kw)
+    return m
+
+
+def test_maker_panel_shows_the_resting_quote_and_action_counter():
+    out = render(snap(summary(maker=maker())))
+    assert dict(out["maker"]) == {
+        "Quote": "buy @ 65001.00", "Remaining": "0.00016", "Resting for": "12.3 s",
+        "Order actions (last 60 s)": "7 / 20", "Rate-limit pause": "no",
+        "Address budget": "321 / 11234", "Capped": "no",
+    }
+    assert out["makerHidden"] is False
+
+
+def test_maker_panel_is_hidden_for_the_taker():
+    assert render(snap(summary()))["makerHidden"] is True
+
+
+def test_maker_panel_states_without_a_known_quote():
+    unknown = dict(render(snap(summary(maker=maker(quote="unknown", capped=True,
+                                                   rate_paused_until=1.0, budget=None)))))
+    assert unknown["maker"][0] == ["Quote", "unknown (re-reading open orders)"]
+    rows = dict(unknown["maker"])
+    assert rows["Capped"].startswith("yes") and rows["Rate-limit pause"].startswith("until ")
+    assert rows["Address budget"] == "n/a"
+    assert dict(render(snap(summary(maker=maker(quote=None))))["maker"])["Quote"] == "none"
+
+
+def test_mid_chart_marks_the_resting_quote():
+    decisions = [{"id": i, "ts": float(i), "mid": 65000.0 + i, "action": "buy", "p_up": 0.6,
+                  "reason": "signal", "size_usd": 11.0, "latency_ms": 5.0} for i in (1, 2)]
+    s = {**snap(summary(maker=maker())), "decisions": decisions}
+    assert "quote buy 65001.00" in render(s)["midTexts"]
+    s = {**snap(summary()), "decisions": decisions}
+    assert not any(t.startswith("quote") for t in render(s)["midTexts"])

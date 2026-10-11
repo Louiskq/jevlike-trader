@@ -68,7 +68,8 @@ def mark_run_start(store, clock: Callable[[], float]) -> None:
 
 def soak_report(store) -> dict:
     """RSS and hold rates for the latest run only (from its run_start marker), so a database
-    reused by a restart or a second run does not mix runs."""
+    reused by a restart or a second run does not mix runs. The maker (its run logs a
+    `strategy` event) always quotes, so only a 100% hold rate is stuck for it."""
     events = sorted(store.events(), key=lambda e: e["id"])
     after_decision_id = 0
     for i in range(len(events) - 1, -1, -1):
@@ -91,7 +92,9 @@ def soak_report(store) -> dict:
     late = sum(1 for r in rows if r["reason"] == "late")
     hold_rate = holds / n if n else None
     warnings = []
-    if n >= MIN_DECISIONS_FOR_STUCK and hold_rate in (0.0, 1.0):
+    maker = any(e["kind"] == "strategy" and e["detail"] == "maker" for e in events)
+    stuck = (1.0,) if maker else (0.0, 1.0)
+    if n >= MIN_DECISIONS_FOR_STUCK and hold_rate in stuck:
         warnings.append(f"WARNING: hold rate stuck at {hold_rate:.0%} over {n} decisions")
     return {
         "rss_start_kb": samples[0] if samples else None,

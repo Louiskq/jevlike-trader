@@ -166,3 +166,16 @@ def test_events_from_a_replaced_source_are_ignored():
       console.log(JSON.stringify(x.events));
     """)
     assert r == [["decision", {"id": 1}]]
+
+
+def test_maker_snapshot_sets_a_longer_history():
+    r = run_js("""
+      const s = L.emptyState();
+      L.applyEvent(s, "snapshot", {summary: {}, decisions: [], fills: [], history_decisions: 1800});
+      for (let i = 1; i <= 1850; i++) L.applyEvent(s, "decision", {id: i});
+      const a = s.decisions.length;
+      L.applyEvent(s, "snapshot", {summary: {}, decisions: [], fills: []});
+      for (let i = 1; i <= 350; i++) L.applyEvent(s, "decision", {id: i});
+      console.log(JSON.stringify([a, s.decisions.length, "history" in s]));
+    """)
+    assert r == [1800, 300, False]

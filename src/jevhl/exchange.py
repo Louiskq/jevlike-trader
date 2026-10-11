@@ -1,9 +1,10 @@
 """Hyperliquid testnet order wrapper over the official SDK (signing and orders only there).
 
-Every method is blocking (HTTP): the trader runs them in a worker thread. Orders are
-marketable IOC limits. An order's acknowledgement is not trusted for accounting: fills are
-read back from `userFillsByTime` (they carry the exchange trade id `tid` and the fee), and
-only those confirmed fills are returned to the ledger.
+Every method is blocking (HTTP): the trader runs them in a worker thread. Taker orders are
+marketable IOC limits; the maker (milestone 8) rests post-only (`Alo`) quotes. An order's
+acknowledgement is not trusted for accounting: fills are read back from `userFillsByTime`
+(they carry the exchange trade id `tid` and the fee), and only those confirmed fills are
+returned to the ledger.
 
 Facts from the Hyperliquid docs (verified 2026-10-04): order response statuses are
 `filled {totalSz, avgPx, oid}`, `resting {oid}` or `error`; userFills rows have string numbers,
@@ -11,6 +12,11 @@ side "B"/"A", `time` in ms, `fee`, `feeToken`, `tid`, `oid`; info queries need t
 account address, because the API wallet only signs and querying its address returns nothing.
 Not verified without an account: the exact text of an IOC "nothing matched" error and whether
 reduce-only orders below $10 notional are exempt from the minimum.
+
+Not verified without a live maker run (the parser matches these texts, see
+parse_quote_response): the post-only rejection text, the reply to a modify (its statuses, or a
+bare `default`) and whether it keeps the oid, the "cannot modify" text, and the rate-limit
+error forms.
 
 No transfer or withdrawal code lives here, and only the testnet URL.
 """
@@ -26,16 +32,23 @@ from .config import Config, ConfigError
 from .feed import Book
 from .paper import limit_price
 from .rounding import AssetMeta, aggressive_price, order_size, reduce_size
+from .types import OpenQuote, QuoteAck
 
 BASE_URL = "https://api.hyperliquid-testnet.xyz"
 HTTP_TIMEOUT_S = 10
 MIN_NOTIONAL_MARGIN = 1.05  # entries aim above the $10 minimum so a falling exit stays above it
 IOC = {"limit": {"tif": "Ioc"}}
+ALO = {"limit": {"tif": "Alo"}}  # post-only: rejected instead of taking liquidity
 FILL_OVERLAP_MS = 60_000  # each fill query re-reads the last minute; tid makes that harmless
 
 
 class ExchangeError(Exception):
     pass
+
+
+class RateLimited(ExchangeError):
+    """The venue refused a request for rate limiting (HTTP 429, or a "too many requests"
+    status). The maker cancels and pauses quoting on it."""
 
 
 class FillNotConfirmed(ExchangeError):
@@ -96,6 +109,54 @@ def parse_order_response(resp: object) -> _Ack | None:
         _finite(f.get("avgPx"), "avgPx")
         return _Ack(int(f["oid"]), _finite(f.get("totalSz"), "totalSz"), resting=False)
     raise ExchangeError(f"unexpected order status: {st!r}")
+
+
+def _rate_text(text: str) -> bool:
+    t = text.lower()
+    return "too many" in t or "rate limit" in t
+
+
+def parse_quote_response(resp: object) -> QuoteAck:
+    """The answer to one post-only order or one modify. A post-only rejection or a gone order
+    is a normal outcome (an ack, not an error); a rate limit raises RateLimited; anything else
+    unexpected raises ExchangeError."""
+    if not isinstance(resp, dict) or resp.get("status") != "ok":
+        detail = repr(resp.get("response") if isinstance(resp, dict) else resp)
+        if _rate_text(detail):
+            raise RateLimited(f"quote refused: {detail}")
+        raise ExchangeError(f"quote refused: {detail}")
+    response = resp.get("response")
+    if isinstance(response, dict) and response.get("type") == "default":
+        return QuoteAck("unknown", None, "reply without an order status")
+    try:
+        statuses = response["data"]["statuses"]  # type: ignore[index]
+        if len(statuses) != 1:
+            raise KeyError("statuses")
+        st = statuses[0]
+    except (KeyError, TypeError):
+        raise ExchangeError(f"unexpected quote response: {resp!r}") from None
+    if isinstance(st, str):  # e.g. "success": no order status to read
+        return QuoteAck("unknown", None, st)
+    if not isinstance(st, dict):
+        raise ExchangeError(f"unexpected quote status: {st!r}")
+    try:
+        if "error" in st:
+            err = str(st["error"])
+            low = err.lower()
+            if "post only" in low and "immediately match" in low:
+                return QuoteAck("rejected", None, err)
+            if "canceled or filled" in low or "already canceled" in low:
+                return QuoteAck("gone", None, err)
+            if _rate_text(err):
+                raise RateLimited(err)
+            raise ExchangeError(f"quote error: {err}")
+        if "resting" in st:
+            return QuoteAck("placed", int(st["resting"]["oid"]), "")
+        if "filled" in st:
+            return QuoteAck("filled", int(st["filled"]["oid"]), "post-only order took liquidity")
+    except (KeyError, TypeError, ValueError):
+        raise ExchangeError(f"unexpected quote status: {st!r}") from None
+    raise ExchangeError(f"unexpected quote status: {st!r}")
 
 
 def parse_fill(raw: dict) -> dict:
@@ -249,6 +310,62 @@ class Exchange:
             if attempt < self._flatten_tries:
                 self._sleep(self._flatten_wait_s)
         raise FlattenFailed(f"could not flatten {self.coin}: {err}", fills)
+
+    # ---- maker quotes (milestone 8) ----
+
+    def place_quote(self, side: str, sz: Decimal, px: Decimal, book: Book | None,
+                    ts: float) -> QuoteAck:
+        """One post-only limit order (never reduce-only). book and ts are for the executor
+        interface (the paper venue needs them) and unused here."""
+        return self._quote_call(
+            lambda: self._sdk.order(self.coin, side == "buy", float(sz), float(px), ALO, False)
+        )
+
+    def modify_quote(self, oid: int, side: str, sz: Decimal, px: Decimal, book: Book | None,
+                     ts: float) -> QuoteAck:
+        """Move a resting quote (one batchModify action; it can change price and side)."""
+        return self._quote_call(lambda: self._sdk.modify_order(
+            oid, self.coin, side == "buy", float(sz), float(px), ALO
+        ))
+
+    def _quote_call(self, send: Callable[[], object]) -> QuoteAck:
+        try:
+            resp = send()
+        except Exception as e:
+            if getattr(e, "status_code", None) == 429:  # the SDK's ClientError
+                raise RateLimited(f"HTTP 429: {getattr(e, 'error_message', e)}") from None
+            raise
+        return parse_quote_response(resp)
+
+    def cancel_oids(self, oids: list[int]) -> int:
+        """Cancel these orders on this coin (one bulk cancel, weight 1 under 40 orders)."""
+        if not oids:
+            return 0
+        resp = self._sdk.bulk_cancel([{"coin": self.coin, "oid": o} for o in oids])
+        if not isinstance(resp, dict) or resp.get("status") != "ok":
+            raise ExchangeError(f"cancel failed: {resp!r}")
+        return len(oids)
+
+    def open_quotes(self) -> list[OpenQuote]:
+        """Our resting orders on this coin."""
+        out = []
+        for o in self._info.open_orders(self._address):
+            if o.get("coin") != self.coin:
+                continue
+            try:
+                side = {"B": "buy", "A": "sell"}[o["side"]]
+                out.append(OpenQuote(int(o["oid"]), side, _finite(o["limitPx"], "limitPx"),
+                                     _finite(o["sz"], "sz")))
+            except (KeyError, TypeError, ValueError):
+                raise ExchangeError(f"malformed open order: {o!r}") from None
+        return out
+
+    def rate_budget(self) -> dict:
+        """The address's request budget (requests used and allowed so far)."""
+        r = self._info.user_rate_limit(self._address)
+        if not isinstance(r, dict):
+            raise ExchangeError(f"unexpected userRateLimit reply: {r!r}")
+        return {"used": r.get("nRequestsUsed"), "cap": r.get("nRequestsCap")}
 
     # ---- reads ----
 

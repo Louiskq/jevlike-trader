@@ -25,7 +25,10 @@ HORIZONS_S = (30, 60, 300)
 
 REASONS = frozenset(
     {"signal", "below_gate", "blocked", "late", "stale", "cap_reached", "killed", "paused",
-     "invalid"}
+     "invalid",
+     # maker (milestone 8): the cap moved the quote to the other side; quoting paused after a
+     # rate-limit error
+     "capped", "rate_paused"}
 )
 
 
@@ -55,5 +58,41 @@ class ModelInput:
 
 
 @dataclass(frozen=True)
+class MakerInput(ModelInput):
+    """The maker's input (milestone 8): the book (all 20 REST levels, our own resting order
+    removed) plus features built in maker.build_input; rendered by prompt.render_maker_context.
+    It is a ModelInput, so the mock model reads its bids and asks as before."""
+
+    imbalance: float = 0.0  # (bid - ask) / (bid + ask) size near the mid, -1..1
+    depth: dict[float, tuple[float, float]] = field(default_factory=dict)  # bps -> (bid, ask)
+    returns_bps: dict[float, float | None] = field(default_factory=dict)  # window s -> bps
+    sampled_mids: list[float | None] = field(default_factory=list)  # oldest first
+    flow: dict = field(default_factory=dict)  # TradeTape.flow over the flow window
+    prints: list[tuple[float, str, float, float]] = field(default_factory=list)  # age, side, px, sz
+
+
+@dataclass(frozen=True)
 class ModelOutput:
     p_up: float
+
+
+@dataclass(frozen=True)
+class QuoteAck:
+    """The venue's answer to a post-only quote or a modify (milestone 8). status:
+    placed (resting, oid), rejected (post-only would have crossed), gone (the order to modify
+    was already filled or cancelled), filled (it took liquidity; should never happen for a
+    post-only order), unknown (a reply without an order status: re-read the open orders)."""
+
+    status: str
+    oid: int | None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class OpenQuote:
+    """One of our resting orders on the coin, as the venue reports it."""
+
+    oid: int
+    side: str
+    px: float
+    sz: float  # remaining

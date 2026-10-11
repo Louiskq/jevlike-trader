@@ -6,7 +6,8 @@ Reads only (needs HL_ACCOUNT_ADDRESS, no API key). Compares every stored live fi
 exchange's userFills by trade id (side, size, price, order id, fee), and the ledger's position
 with the exchange's. Also compares the ledger's realized P&L (before fees) with the sum of the
 exchange's own closedPnl. Exits 1 on any mismatch. Prints fees and P&L so they can be compared
-with the testnet UI by eye.
+with the testnet UI by eye, the maker/taker split of the exchange's fills (from its own
+`crossed` flag: this checks the maker fee rate) and the open orders left on the coin.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import argparse
 import time
 
 from .config import Config
-from .exchange import BASE_URL, fetch_fills, fetch_position
+from .exchange import BASE_URL, fetch_position, parse_fill
 from .ledger import Ledger
 from .rounding import AssetMeta
 from .store import Store
@@ -46,6 +47,20 @@ def compare(
     return problems
 
 
+def maker_taker_split(rows: list[dict]) -> list[str]:
+    """Count, fees and fee rate of the exchange's maker (crossed false) and taker fills."""
+    lines = []
+    for name, crossed in (("maker", False), ("taker", True)):
+        fs = [parse_fill(r) for r in rows if bool(r.get("crossed", True)) is crossed]
+        if not fs:
+            continue
+        fees = sum(f["fee"] for f in fs)
+        notional = sum(f["sz"] * f["px"] for f in fs)
+        lines.append(f"{name} fills {len(fs)}: fees ${fees:.6f} "
+                     f"({fees / notional * 1e4:.2f} bps of notional)")
+    return lines
+
+
 def run_reconcile(
     store: Store, info, address: str, coin: str, meta: AssetMeta
 ) -> tuple[str, bool]:
@@ -53,7 +68,8 @@ def run_reconcile(
     so earlier sessions' history is not flagged."""
     local = [dict(r) for r in store.fills() if r["tid"] > 0]
     start_ms = int(min(f["ts"] for f in local) * 1000) - 1000 if local else int(time.time() * 1000)
-    remote = fetch_fills(info, address, coin, start_ms)
+    rows = [r for r in info.user_fills_by_time(address, start_ms) if r.get("coin") == coin]
+    remote = [parse_fill(r) for r in rows]
     remote_pos = fetch_position(info, address, coin)
     ledger, remote_ledger = Ledger.from_fills(local), Ledger.from_fills(remote)
     problems = compare(local, remote, ledger.position, remote_pos, 10.0 ** -meta.sz_decimals / 2)
@@ -80,6 +96,12 @@ def run_reconcile(
         )
     except Exception as e:
         lines.append(f"P&L: no mid available ({type(e).__name__})")
+    lines += maker_taker_split(rows)
+    try:
+        n_open = sum(1 for o in info.open_orders(address) if o.get("coin") == coin)
+        lines.append(f"open orders on {coin}: {n_open} (should be 0 after a run)")
+    except Exception as e:
+        lines.append(f"open orders: unknown ({type(e).__name__})")
     lines += [f"MISMATCH: {p}" for p in problems]
     lines.append(f"{len(problems)} MISMATCH(ES)" if problems else "OK: local and exchange agree")
     return "\n".join(lines), not problems

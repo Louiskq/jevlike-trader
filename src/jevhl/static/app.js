@@ -79,9 +79,30 @@
       ["Hold rate", sm.hold_rate === null ? "n/a" : fmt(sm.hold_rate * 100, 1) + "%"],
       ["Fills", sm.n_fills],
     ]);
+    renderMaker(sm.maker);
     renderChips(sm);
     renderBrier(sm.calibration);
     sm.calibration.forEach(drawReliability);
+  }
+
+  // The maker's resting quote (milestone 8); the card stays hidden for the taker.
+  function renderMaker(m) {
+    $("maker-card").hidden = !m;
+    if (!m) return;
+    var q = m.quote;
+    var quote = q === "unknown" ? "unknown (re-reading open orders)"
+      : q ? q.side + " @ " + fmt(q.px, 2) : "none";
+    var b = m.budget;
+    fillDl("maker", [
+      ["Quote", quote, q && q.side === "buy" ? "good" : q && q.side === "sell" ? "bad" : ""],
+      ["Remaining", q && q.side ? fmt(q.remaining, 5) : "n/a"],
+      ["Resting for", q && q.side ? fmt(q.age_s, 1) + " s" : "n/a"],
+      ["Order actions (last 60 s)", m.actions_last_min + " / " + m.actions_cap],
+      ["Rate-limit pause", m.rate_paused_until ? "until " + timeOf(m.rate_paused_until) : "no",
+        m.rate_paused_until ? "warn" : ""],
+      ["Address budget", b && b.used !== null && b.used !== undefined ? b.used + " / " + b.cap : "n/a"],
+      ["Capped", m.capped ? "yes (quote moved to the other side)" : "no", m.capped ? "warn" : ""],
+    ]);
   }
 
   function renderBrier(cal) {
@@ -156,6 +177,9 @@
     var t0 = ds[0].ts, t1 = ds[ds.length - 1].ts;
     var lo = Infinity, hi = -Infinity;
     ds.forEach(function (d) { lo = Math.min(lo, d.mid); hi = Math.max(hi, d.mid); });
+    var mq = state.summary && state.summary.maker && state.summary.maker.quote;
+    var quote = mq && mq.side ? mq : null;
+    if (quote) { lo = Math.min(lo, quote.px); hi = Math.max(hi, quote.px); }
     fs.forEach(function (f) { if (f.ts >= t0) { lo = Math.min(lo, f.px); hi = Math.max(hi, f.px); } });
     if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
     var span = hi - lo; lo -= span * 0.05; hi += span * 0.05;
@@ -176,6 +200,14 @@
       if (d.action === "buy") tri(g, X(d.ts), Y(d.mid), true, COLORS.good);
       else if (d.action === "sell") tri(g, X(d.ts), Y(d.mid), false, COLORS.bad);
     });
+    if (quote) {
+      g.strokeStyle = quote.side === "buy" ? COLORS.good : COLORS.bad;
+      g.setLineDash([4, 4]); g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(o.w - padR - 120, Y(quote.px)); g.lineTo(o.w - padR, Y(quote.px)); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = g.strokeStyle;
+      g.fillText("quote " + quote.side + " " + fmt(quote.px, 2), o.w - padR - 120, Y(quote.px) - 4);
+    }
     g.lineWidth = 2;
     fs.forEach(function (f) {
       if (f.ts < t0) return;

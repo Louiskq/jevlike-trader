@@ -126,6 +126,11 @@ class Trader:
     def kill_reason(self) -> str | None:
         return self._kill.reason
 
+    @property
+    def _gate(self) -> float:
+        """The gate stored with each decision (the maker's is 0.5)."""
+        return self.cfg.gate
+
     # ---- per snapshot ----
 
     async def on_book(self, book: Book) -> None:
@@ -133,7 +138,9 @@ class Trader:
             return
         prev, self._last_book = self._last_book, book
         self._kill.on_book()
-        self._recent = (self._recent + [book.mid])[-RECENT_MIDS:]
+        mid = self._market_mid(book)
+        if mid is not None:
+            self._recent = (self._recent + [mid])[-RECENT_MIDS:]
         self._resolve_outcomes(book)
         await self._poll_fills()
         await self._run_exits(book)
@@ -144,9 +151,11 @@ class Trader:
             if self.stopped:
                 return
             if self._paused:
-                self.store.insert_decision(
-                    hold("paused", ts=book.recv_ts, gate=self.cfg.gate), book.mid
-                )
+                mid = self._market_mid(book)
+                if mid is not None:
+                    self.store.insert_decision(
+                        hold("paused", ts=book.recv_ts, gate=self._gate), mid
+                    )
                 return
         if self._inflight:
             self.store.log_event(self._clock(), "skip", "decision in flight")
@@ -157,6 +166,11 @@ class Trader:
         finally:
             self._inflight = False
         await self._risk(book)
+
+    def _market_mid(self, book: Book) -> float | None:
+        """The mid kept in the recent mids and stored with a paused hold. The maker takes its
+        own order out first, and has none while its open orders are unknown."""
+        return book.mid
 
     def _resolve_outcomes(self, book: Book) -> None:
         """Outcome mid = the first book at or after decision ts + horizon, but only if it
@@ -329,16 +343,16 @@ class Trader:
         cfg = self.cfg
         ts = book.recv_ts
         if self._clock() - book.recv_ts > cfg.stale_s:
-            d = hold("stale", ts=ts, gate=cfg.gate)
+            d = hold("stale", ts=ts, gate=self._gate)
             self.store.insert_decision(d, book.mid)
             return
         inp = ModelInput(ts, book.coin, book.mid, book.spread_bps,
                          book.bids, book.asks, list(self._recent), cfg.horizon_s)
         d = await self._ask(inp, ts)
         if self.stopped or self._kill.tripped:  # tripped while the model was thinking
-            d = hold("killed", ts=ts, gate=cfg.gate, p_up=d.p_up, latency_ms=d.latency_ms)
+            d = hold("killed", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
         elif self._paused:  # paused while the model was thinking
-            d = hold("paused", ts=ts, gate=cfg.gate, p_up=d.p_up, latency_ms=d.latency_ms)
+            d = hold("paused", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
         decision_id = self.store.insert_decision(d, book.mid)
         if d.action is Action.HOLD:
             return
@@ -346,25 +360,31 @@ class Trader:
 
     async def _ask(self, inp: ModelInput, ts: float) -> Decision:
         cfg = self.cfg
+        deadline_s = cfg.decision_deadline_s
         if self._model_task is not None and not self._model_task.done():
             # A timed-out call is still running in its thread: never start a second one.
-            return hold("late", ts=ts, gate=cfg.gate, latency_ms=cfg.deadline_s * 1000)
+            return hold("late", ts=ts, gate=self._gate, latency_ms=deadline_s * 1000)
         t0 = self._perf()
         task = asyncio.ensure_future(asyncio.to_thread(self._model.predict, inp))
         task.add_done_callback(lambda t: t.cancelled() or t.exception())  # mark retrieved
         self._model_task = task
         try:
-            out = await asyncio.wait_for(asyncio.shield(task), cfg.deadline_s)
+            out = await asyncio.wait_for(asyncio.shield(task), deadline_s)
         except TimeoutError:
-            ms = max((self._perf() - t0) * 1000, cfg.deadline_s * 1000)
-            return hold("late", ts=ts, gate=cfg.gate, latency_ms=ms)
+            ms = max((self._perf() - t0) * 1000, deadline_s * 1000)
+            return hold("late", ts=ts, gate=self._gate, latency_ms=ms)
         except Exception as e:  # a broken model must not stop the bot: hold and log
             self.store.log_event(self._clock(), "model_error", f"{type(e).__name__}: {e}")
-            return hold("invalid", ts=ts, gate=cfg.gate, latency_ms=(self._perf() - t0) * 1000)
-        latency_ms = (self._perf() - t0) * 1000
+            return hold("invalid", ts=ts, gate=self._gate, latency_ms=(self._perf() - t0) * 1000)
+        return self._policy(out.p_up, inp, ts, (self._perf() - t0) * 1000)
+
+    def _position_usd(self, mid: float) -> float:
         pos = self.ledger.position
-        position_usd = (0.0 if abs(pos) < self._dust else pos) * inp.mid  # below a lot = flat
-        return decide(out.p_up, position_usd, cfg, ts=ts, latency_ms=latency_ms)
+        return (0.0 if abs(pos) < self._dust else pos) * mid  # below a lot = flat
+
+    def _policy(self, p_up: float, inp: ModelInput, ts: float, latency_ms: float) -> Decision:
+        """The model's answer as a decision (the maker has its own policy)."""
+        return decide(p_up, self._position_usd(inp.mid), self.cfg, ts=ts, latency_ms=latency_ms)
 
     async def _enter(self, book: Book, d: Decision, decision_id: int) -> None:
         side = d.action.value

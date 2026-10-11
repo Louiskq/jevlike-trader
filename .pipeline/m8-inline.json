@@ -1,0 +1,12 @@
+{
+ "commit_id": "cbc93d8e5eb7d367f795e97fff21643d70f15a92",
+ "event": "COMMENT",
+ "body": "Review trail for M8: reviewer findings R1-R5 and break-it B1-B3; one builder catch. No user catches at this gate; the user chose to fix all five and to keep the strict cap.",
+ "comments": [
+  {"path": "src/jevhl/maker.py", "line": 253, "side": "RIGHT", "body": "Caught (reviewer): recent mids and returns used the raw mid, and an unknown quote fell back to the raw book, so our own quote leaked into the model's input and the labels. Fixed in a30df8e."},
+  {"path": "src/jevhl/maker.py", "line": 58, "side": "RIGHT", "body": "Caught (reviewer): a stray cancel could use the reserved slot and stop cancels and flatten orders were uncounted, breaking the 20-a-minute limit. Now two slots are reserved and every action counts. Fixed in 77eefcf."},
+  {"path": "src/jevhl/paper.py", "line": 114, "side": "RIGHT", "body": "Caught (reviewer): prints through the old quote just before a modify were missed, making paper P&L look better. Fixed in 99ad80a."},
+  {"path": "src/jevhl/feed.py", "line": 218, "side": "RIGHT", "body": "Caught (reviewer): a 429 on reads was only logged; it now cancels and pauses quoting. Fixed in d17858b."},
+  {"path": "src/jevhl/config.py", "line": 183, "side": "RIGHT", "body": "Caught (reviewer): maker settings were validated for the taker too. Fixed in 044713d."}
+ ]
+}
