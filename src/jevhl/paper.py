@@ -11,7 +11,9 @@ trade print goes THROUGH its price (a taker sell below our bid, a taker buy abov
 at our price others are assumed queued ahead (user decision 2026-10-10). Only prints made and
 received after the quote was placed count, and a modify starts the queue again. A fill is at
 most the print's size and never more than rests. Maker fee 0.015% (base tier, until verified on
-testnet). A quote that would cross the book it was priced on is rejected, as post-only is.
+testnet). A quote that would cross the book it was priced on is rejected, as post-only is, and a
+modify that changes the side is refused with the order left resting, as on Hyperliquid
+(measured 2026-10-11).
 """
 
 from __future__ import annotations
@@ -92,9 +94,11 @@ class PaperExchange:
     def modify_quote(self, oid: int, side: str, sz: Decimal, px: Decimal, book: Book,
                      ts: float) -> QuoteAck:
         """A modify replaces the order: a new oid and a new place in the queue. A crossing
-        modify leaves no order behind."""
+        modify leaves no order behind. A side change is refused and the order stays."""
         if self._quote is None or self._quote.oid != oid:
             return QuoteAck("gone", None, "no such resting order")
+        if self._quote.side != side:
+            return QuoteAck("refused", None, "Attempted to modify to invalid new order")
         self._quote = None
         return self.place_quote(side, sz, px, book, ts)
 

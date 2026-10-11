@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 
-from fake_hl import HTTP429, FakeHL
+from fake_hl import HTTP429, INVALID_MODIFY_ERR, FakeHL, _err_status
 from jevhl.config import Config
 from jevhl.exchange import Exchange
 from jevhl.feed import Book, Print, poll_books
@@ -207,14 +207,205 @@ def test_price_change_sends_one_modify_not_cancel_and_place():
     assert tr.maker_view()["quote"]["oid"] == 1001  # the modify's answer is adopted
 
 
-def test_side_change_is_one_modify():
+def test_side_change_cancels_then_places_not_modify():
+    """Hyperliquid refuses a modify that changes the side (measured 2026-10-11)."""
     tr, store, clock, fake, model = make_live()
     tick(tr, clock, T0)
+    no_polls(tr, clock)
     model.p = 0.2
     tick(tr, clock, T0 + 1)
-    (mod,) = calls(fake, "modify")
-    assert (mod[3], mod[5]) == (False, 65002.0)  # a sell one tick below the ask
-    assert len(calls(fake, "order")) == 1 and calls(fake, "bulk_cancel") == []
+    assert [c[0] for c in quote_actions(fake)] == ["order", "bulk_cancel", "order"]
+    assert calls(fake, "bulk_cancel")[0][1] == [{"coin": "BTC", "oid": 1000}]
+    order = calls(fake, "order")[-1]
+    assert (order[2], order[4]) == (False, 65002.0)  # a sell one tick below the ask
+    assert [(o["oid"], o["side"]) for o in fake.resting] == [(1001, "A")]
+    assert tr.maker_view()["quote"]["oid"] == 1001 and tr.maker_view()["quote"]["side"] == "sell"
+    assert tr.maker_view()["actions_last_min"] == 3  # the cancel and the place both count
+    assert events(store, "order_error") == []
+
+
+def test_paper_side_change_cancels_then_places():
+    tr, store, clock, model = make_paper()
+    tick(tr, clock, T0)
+    (old,) = tr._executor.open_quotes()
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    (new,) = tr._executor.open_quotes()
+    assert (new.side, new.px) == ("sell", 65002.0) and new.oid != old.oid
+    assert tr.maker_view()["actions_last_min"] == 3
+    assert events(store, "quote_refused") == [] and events(store, "order_error") == []
+
+
+def test_side_change_needs_room_for_two_actions():
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    tr._actions += [clock.t] * 16  # 17 in the window: one more fits under 18, two do not
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert len(quote_actions(fake)) == 1 and fake.resting[0]["oid"] == 1000
+    assert events(store, "action_cap")[-1] == "decision 2: sell @ 65002 not sent"
+    model.p = 0.9
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 2, bid=65001.0)  # a same-side price change is one action: it fits
+    assert [c[0] for c in quote_actions(fake)] == ["order", "modify"]
+
+
+def test_failed_side_change_cancel_is_an_order_error_and_places_nothing():
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.fail_cancel = [ConnectionError("blip")]
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert len(calls(fake, "order")) == 1  # no place beside an order that may still rest
+    assert tr.maker_view()["quote"] == "unknown" and tr._kill._errors == 1
+    (err,) = events(store, "order_error")
+    assert err.startswith("cancel oid 1000 (buy @ 65001) for sell @ 65002: ConnectionError")
+    n_reads = len(calls(fake, "open_orders"))
+    tick(tr, clock, T0 + 2)  # the open orders are re-read first: the buy is adopted
+    assert len(calls(fake, "open_orders")) == n_reads + 1
+    assert events(store, "quote_adopted") == ["oid 1000"]
+    assert [(o["oid"], o["side"]) for o in fake.resting] == [(1001, "A")]
+    assert tr._kill._errors == 0
+
+
+def test_rate_limited_side_change_cancel_pauses_quoting():
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.fail_cancel = [HTTP429()]
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert len(events(store, "rate_limited")) == 1 and tr._kill._errors == 1
+    assert events(store, "rate_limited")[0].startswith("cancel oid 1000 (buy @ 65001) for sell")
+    assert fake.resting == [] and len(calls(fake, "order")) == 1  # cancelled, nothing placed
+    assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 61)
+
+
+def test_side_change_cancel_of_a_filled_order_books_the_fill_and_skips_the_place():
+    tr, store, clock, fake, model = make_live(cfg=replace(MCFG, max_position_usd=50.0))
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.taker_hits(1000, SZ)  # filled; the poll has not seen it
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)  # the cancel finds nothing; the fill sync after it books the buy
+    assert len(store.fills()) == 1 and tr.ledger.position == pytest.approx(SZ)
+    assert len(calls(fake, "order")) == 1 and tr.maker_view()["quote"] is None
+    assert events(store, "quote_skipped")[-1] == (
+        "decision 2: position changed while cancelling; re-quoted at the next decision")
+    tick(tr, clock, T0 + 2)
+    assert calls(fake, "order")[-1][2] is False and tr.maker_view()["quote"]["side"] == "sell"
+    assert events(store, "order_error") == []
+
+
+def test_side_change_cancel_then_halt_places_nothing():
+    """The fill sync after the cancel is an await: a halt meanwhile stops the place."""
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    real = fake.user_fills_by_time
+
+    def fills_then_halt(*a, **k):
+        tr.stopped = True
+        return real(*a, **k)
+
+    fake.user_fills_by_time = fills_then_halt
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert [c[0] for c in quote_actions(fake)] == ["order", "bulk_cancel"]
+    assert events(store, "quote_skipped")[-1] == "decision 2: halted or paused"
+    assert tr.maker_view()["quote"] is None  # the cancelled order is no longer tracked
+
+
+def test_side_change_place_rejected_leaves_no_quote_and_is_repriced():
+    tr, store, clock, fake, model = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.bids = [[65002.0, 5.0]]  # the venue's bid moved up to our sell price; our book has not
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert [c[0] for c in quote_actions(fake)] == ["order", "bulk_cancel", "order"]
+    assert tr.maker_view()["quote"] is None and fake.resting == []
+    (rej,) = events(store, "quote_rejected")
+    assert rej.startswith("place sell 0.00016 @ 65002: Post only")
+    tick(tr, clock, T0 + 2, bid=65002.0, ask=65004.0)  # the book caught up
+    assert calls(fake, "order")[-1][4] == 65003.0 and tr.maker_view()["quote"]["px"] == 65003.0
+    assert tr._kill._errors == 0 and events(store, "order_error") == []
+
+
+def test_refused_modify_keeps_the_old_quote_and_is_not_an_order_error():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.bids = [[65001.0, 5.0]]
+    for i in range(1, 5):
+        fake.modify_response = _err_status(INVALID_MODIFY_ERR)
+        tick(tr, clock, T0 + i, bid=65001.0)  # each decision tries the modify to 65002 again
+    assert len(calls(fake, "modify")) == 4
+    q = tr.maker_view()["quote"]
+    assert (q["oid"], q["side"], q["px"]) == (1000, "buy", 65001.0)  # the old order rests
+    assert events(store, "quote_refused")[0] == (
+        f"modify oid 1000 buy 0.00016 @ 65002: {INVALID_MODIFY_ERR}")
+    assert events(store, "order_error") == [] and tr._kill._errors == 0 and not tr.stopped
+    tick(tr, clock, T0 + 5, bid=65001.0)  # the venue accepts it this time
+    assert tr.maker_view()["quote"]["px"] == 65002.0
+
+
+def test_the_1744_live_sequence_ends_with_a_buy_resting_and_no_order_errors():
+    """2026-10-11 17:44 UTC: the buy filled, its modify answered gone, a sell was placed, the
+    model flipped to buy and the sell-to-buy modify was refused three times (kill)."""
+    tr, store, clock, fake, model = make_live(cfg=replace(MCFG, max_position_usd=50.0))
+    tick(tr, clock, T0)  # buy at 65001
+    no_polls(tr, clock)
+    fake.taker_hits(1000, SZ)  # the buy filled; the poll has not seen it
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 1, bid=65001.0)  # re-price: the modify of the filled buy is gone
+    assert len(events(store, "quote_gone")) == 1 and tr.ledger.position == pytest.approx(SZ)
+    model.p = 0.2
+    tick(tr, clock, T0 + 2, bid=65001.0)  # a sell is placed
+    assert tr.maker_view()["quote"]["side"] == "sell"
+    for i in range(3, 9):  # the model flips to buy, and back, three times
+        model.p = 0.9 if i % 2 else 0.2
+        tick(tr, clock, T0 + i, bid=65001.0)
+        assert tr.maker_view()["quote"]["side"] == ("buy" if i % 2 else "sell")
+    model.p = 0.9
+    tick(tr, clock, T0 + 9, bid=65001.0)
+    assert [(o["side"], o["limitPx"]) for o in fake.resting] == [("B", "65002.0")]
+    assert tr.maker_view()["quote"]["side"] == "buy"
+    assert events(store, "order_error") == [] and not tr.stopped and tr._kill._errors == 0
+    assert calls(fake, "modify") == [("modify", 1000, "BTC", True, SZ, 65002.0,
+                                      {"limit": {"tif": "Alo"}}, False)]  # only the re-price
+
+
+@pytest.mark.parametrize("how,kind,sent", [
+    ("place_raises", "order_error", "quote place buy 0.00016 @ 65001: ConnectionError"),
+    ("modify_raises", "order_error",
+     "quote modify oid 1000 buy 0.00016 @ 65002: ConnectionError"),
+    ("modify_429", "rate_limited", "quote modify oid 1000 buy 0.00016 @ 65002: HTTP 429"),
+    ("modify_gone", "quote_gone", "modify oid 1000 buy 0.00016 @ 65002: Cannot modify"),
+    ("modify_unknown", "quote_unknown",
+     "modify oid 1000 buy 0.00016 @ 65002: reply without an order status"),
+])
+def test_quote_error_events_say_what_was_sent(how, kind, sent):
+    tr, store, clock, fake, _ = make_live()
+    if how == "place_raises":
+        fake.fail_orders = [ConnectionError("down")]
+        tick(tr, clock, T0)
+    else:
+        tick(tr, clock, T0)
+        no_polls(tr, clock)
+        fake.bids = [[65001.0, 5.0]]
+        if how == "modify_raises":
+            fake.fail_modify = [ConnectionError("down")]
+        elif how == "modify_429":
+            fake.fail_modify = [HTTP429()]
+        elif how == "modify_gone":
+            fake.resting.clear()
+        else:
+            fake.modify_response = {"status": "ok", "response": {"type": "default"}}
+        tick(tr, clock, T0 + 1, bid=65001.0)
+    assert events(store, kind)[0].startswith(sent)
 
 
 def test_quote_priced_from_a_paper_book_and_paper_book_is_not_stripped():
@@ -355,8 +546,8 @@ def test_modify_of_a_filled_order_syncs_fills_without_double_booking():
     tick(tr, clock, T0)
     no_polls(tr, clock)
     fake.taker_hits(1000, SZ)  # filled; the poll has not seen it
-    model.p = 0.2
-    tick(tr, clock, T0 + 1)  # side change: modify of a filled order is "gone"
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 1, bid=65001.0)  # re-price: modify of a filled order is "gone"
     assert len(events(store, "quote_gone")) == 1
     assert len(store.fills()) == 1 and tr.ledger.position == pytest.approx(SZ)
     tr._last_poll = 0.0
@@ -495,9 +686,9 @@ def test_order_error_kill_cancels_quote():
     tick(tr, clock, T0)
     no_polls(tr, clock)
     fake.fail_modify = [ConnectionError("down")] * 3
-    model.p = 0.2  # a sell: each try is a modify of the buy, which is re-read and adopted
+    fake.bids = [[65001.0, 5.0]]  # each try is a modify of the buy, which is re-read and adopted
     for i in range(3):
-        tick(tr, clock, T0 + 1 + i)
+        tick(tr, clock, T0 + 1 + i, bid=65001.0)
     assert tr.stopped and tr.kill_reason == "order_errors"
     assert fake.resting == [] and len(events(store, "order_error")) == 3
 
@@ -573,20 +764,21 @@ def test_a_failed_quote_counts_as_an_order_error_and_is_rechecked():
 # ---- the order-action cap and rate limits ----
 
 
-def flip(tr, clock, model, n, start=T0, step=1.0):
-    for i in range(n):
-        model.p = 0.9 if i % 2 == 0 else 0.2
-        tick(tr, clock, start + i * step)
+def walk(tr, clock, first, last):
+    """One decision a second from T0+first to T0+last, each wanting the buy one tick from
+    the last (the bid alternates 65000 at even seconds, 64999 at odd): one action each (a
+    place at T0, then modifies; a side change would be two)."""
+    for i in range(first, last + 1):
+        tick(tr, clock, T0 + i, bid=65000.0 - i % 2)
 
 
 def test_actions_capped_at_20_per_rolling_minute():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
-    tick(tr, clock, T0)
-    flip_from(tr, clock, model, 1, 4)  # every decision wants a new quote
+    walk(tr, clock, 0, 4)  # every decision wants a new quote
     fake.resting.append(dict(STRAY))
     tr._last_reconcile = 0.0
-    flip_from(tr, clock, model, 5, 24)  # the stray is cancelled at T0+5: it counts too
+    walk(tr, clock, 5, 24)  # the stray is cancelled at T0+5: it counts too
     assert calls(fake, "bulk_cancel")[0][1] == [{"coin": "BTC", "oid": 77}]
     # 17 quotes and the stray cancel: two of the 20 are kept for a stop's cancel and close
     assert len(quote_actions(fake)) == 18
@@ -598,14 +790,12 @@ def test_actions_capped_at_20_per_rolling_minute():
 def test_action_window_rolls_off_after_60_s():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
-    flip(tr, clock, model, 18)  # T0 .. T0+17: the quotes' share is full; the last is a sell
-    model.p = 0.9
+    walk(tr, clock, 0, 17)  # T0 .. T0+17: the quotes' share is full; the last at 65000
     tick(tr, clock, T0 + 60.0)  # the first action (T0) is exactly 60 s old: out of the window
     assert len(quote_actions(fake)) == 19
-    model.p = 0.2
-    tick(tr, clock, T0 + 60.37)  # T0+1 is still 59.37 s old: capped
+    tick(tr, clock, T0 + 60.37, bid=64999.0)  # T0+1 is still 59.37 s old: capped
     assert len(quote_actions(fake)) == 19 and events(store, "action_cap")
-    tick(tr, clock, T0 + 61.01)
+    tick(tr, clock, T0 + 61.01, bid=64999.0)
     assert len(quote_actions(fake)) == 20
 
 
@@ -640,23 +830,15 @@ STRAY = {"coin": "BTC", "side": "A", "limitPx": "66000.0", "sz": "0.001", "oid":
          "timestamp": 1, "origSz": "0.001"}  # an order placed in the UI
 
 
-def flip_from(tr, clock, model, first, last):
-    """One decision a second from T0+first to T0+last, each on the other side (sell first)."""
-    for i in range(first, last + 1):
-        model.p = 0.2 if i % 2 else 0.9
-        tick(tr, clock, T0 + i)
-
-
 def test_a_full_window_then_a_stray_and_a_stop_with_a_position_stay_within_20_a_minute():
     tr, store, clock, fake, model = make_live()
     times = stamp_actions(fake, clock)
     no_polls(tr, clock)
     tick(tr, clock, T0)
     fake.taker_hits(1000, 0.00005)  # a position for the stop to close
-    flip_from(tr, clock, model, 1, 16)  # 17 quote actions
+    walk(tr, clock, 1, 16)  # 17 quote actions
     fake.fail_modify = [HTTP429()]
-    model.p = 0.2
-    tick(tr, clock, T0 + 17)  # the 18th is refused; the rate-limit cancel is the 19th
+    tick(tr, clock, T0 + 17, bid=64999.0)  # the 18th is refused; the rate-limit cancel is the 19th
     assert len(times) == 19 and fake.resting == []
     fake.resting.append(dict(STRAY))
     tr._last_reconcile = 0.0
@@ -671,13 +853,13 @@ def test_a_full_window_then_a_stray_and_a_stop_with_a_position_stay_within_20_a_
 def test_a_stray_cancel_waits_while_only_the_stop_slots_are_free():
     tr, store, clock, fake, model = make_live()
     no_polls(tr, clock)
-    flip(tr, clock, model, 18)  # T0 .. T0+17: 18 quote actions, all quotes may use
+    walk(tr, clock, 0, 17)  # T0 .. T0+17: 18 quote actions, all quotes may use
     fake.resting.append(dict(STRAY))
     tr._last_reconcile = 0.0
-    tick(tr, clock, T0 + 18)
+    tick(tr, clock, T0 + 18, bid=64999.0)  # the quote wanted is the one resting (65000)
     assert any(o["oid"] == 77 for o in fake.resting) and "77" in events(store, "action_cap")[-1]
     tr._last_reconcile = 0.0
-    tick(tr, clock, T0 + 60.5)  # T0's action has left the window: room again
+    tick(tr, clock, T0 + 60.5, bid=64999.0)  # T0's action has left the window: room again
     assert all(o["oid"] != 77 for o in fake.resting) and events(store, "stray_order")
 
 
@@ -688,7 +870,7 @@ def test_a_stop_after_a_full_quoting_minute_cancels_and_closes_at_once():
     no_polls(tr, clock)
     tick(tr, clock, T0)
     fake.taker_hits(1000, 0.00005)
-    flip_from(tr, clock, model, 1, 18)  # 17 more quotes, then one capped
+    walk(tr, clock, 1, 18)  # 17 more quotes, then one capped
     assert len(times) == 18 and events(store, "action_cap")
     run(tr.shutdown())
     assert len(times) == 20 and times[-1] == T0 + 18  # no wait
@@ -739,8 +921,8 @@ def test_rate_limit_error_cancels_and_pauses_quoting():
     tick(tr, clock, T0)
     no_polls(tr, clock)
     fake.fail_modify = [HTTP429()]
-    model.p = 0.2
-    tick(tr, clock, T0 + 1)
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 1, bid=65001.0)
     assert len(events(store, "rate_limited")) == 1 and fake.resting == []
     assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 61)
     for i in range(2, 30):
@@ -837,7 +1019,8 @@ def test_a_book_rate_limit_stops_a_quote_already_decided():
     no_polls(tr, clock)
     tr._model = PollerLimitedWhileThinking(tr, p=0.2)
     tick(tr, clock, T0 + 1)  # the model wants a sell, but the poller was refused meanwhile
-    assert calls(fake, "modify") == [] and events(store, "quote_skipped")
+    assert calls(fake, "modify") == [] and calls(fake, "order") == [calls(fake, "order")[0]]
+    assert events(store, "quote_skipped")
     assert tr.maker_view()["rate_paused_until"] == pytest.approx(T0 + 61)
 
 
@@ -967,8 +1150,8 @@ def test_unclear_modify_reply_reads_open_orders_before_the_next_quote():
     tick(tr, clock, T0)
     no_polls(tr, clock)
     fake.modify_response = {"status": "ok", "response": {"type": "default"}}
-    model.p = 0.2
-    tick(tr, clock, T0 + 1)
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 1, bid=65001.0)
     assert tr.maker_view()["quote"] == "unknown" and events(store, "quote_unknown")
     n_reads = len(calls(fake, "open_orders"))
     tick(tr, clock, T0 + 2)
@@ -1002,8 +1185,8 @@ def test_a_failed_rate_limit_cancel_leaves_the_quote_unknown():
     no_polls(tr, clock)
     fake.fail_modify = [HTTP429()]
     fake.fail_cancel = [ConnectionError("blip")]
-    model.p = 0.2
-    tick(tr, clock, T0 + 1)
+    fake.bids = [[65001.0, 5.0]]
+    tick(tr, clock, T0 + 1, bid=65001.0)
     assert events(store, "cancel_error") and tr.maker_view()["quote"] == "unknown"
 
 
@@ -1095,8 +1278,8 @@ def test_decision_and_outcome_mids_exclude_our_own_quote():
     tick(tr, clock, T0 + 30, bid=65001.0, bid_sz=SZ)
     (o30,) = store.outcomes(first["id"])
     assert o30["mid_future"] == 65001.5 and o30["label"] is None  # unchanged market: a tie
-    # after an unclear modify reply the quote is unknown: still never the raw mid
-    fake.modify_response = {"status": "ok", "response": {"type": "default"}}
+    # after a failed cancel the quote is unknown (the buy still rests): still never the raw mid
+    fake.fail_cancel = [ConnectionError("blip")]
     tr._model = StubModel(p=0.2)
     tick(tr, clock, T0 + 31, bid=65001.0, bid_sz=SZ)
     assert tr.maker_view()["quote"] == "unknown"
@@ -1124,9 +1307,9 @@ def test_an_unknown_quote_is_reread_before_the_decision_not_decided_on_the_raw_b
     tr, store, clock, fake, _ = make_live(model=model)
     tick(tr, clock, T0)
     no_polls(tr, clock)
-    fake.modify_response = {"status": "ok", "response": {"type": "default"}}
+    fake.fail_cancel = [ConnectionError("blip")]
     model.p = 0.2
-    tick(tr, clock, T0 + 1, bid=65001.0, bid_sz=SZ)  # an unclear modify reply: unknown
+    tick(tr, clock, T0 + 1, bid=65001.0, bid_sz=SZ)  # the side change's cancel fails: unknown
     assert tr.maker_view()["quote"] == "unknown"
     tick(tr, clock, T0 + 2, bid=65001.0, bid_sz=SZ)  # our buy still rests at 65001
     assert events(store, "quote_adopted") == ["oid 1000"]
