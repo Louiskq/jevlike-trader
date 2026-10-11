@@ -433,11 +433,16 @@ def test_the_1744_live_sequence_ends_with_a_buy_resting_and_no_order_errors():
     ("modify_gone", "quote_gone", "modify oid 1000 buy 0.00016 @ 65002: Cannot modify"),
     ("modify_unknown", "quote_unknown",
      "modify oid 1000 buy 0.00016 @ 65002: reply without an order status"),
+    ("place_filled", "quote_filled", "place buy 0.00016 @ 65001: post-only order took liquidity"),
 ])
 def test_quote_error_events_say_what_was_sent(how, kind, sent):
     tr, store, clock, fake, _ = make_live()
     if how == "place_raises":
         fake.fail_orders = [ConnectionError("down")]
+        tick(tr, clock, T0)
+    elif how == "place_filled":
+        fake.order_response = {"status": "ok", "response": {"type": "order", "data": {
+            "statuses": [{"filled": {"totalSz": "0.00016", "avgPx": "65001.0", "oid": 999}}]}}}
         tick(tr, clock, T0)
     else:
         tick(tr, clock, T0)
