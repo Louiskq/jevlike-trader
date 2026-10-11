@@ -366,7 +366,9 @@ class MakerTrader(Trader):
         whether the place may follow. A failed cancel is an order error and leaves the quote
         unknown (re-read before the next quote); a rate limit cancels and pauses. If the
         position moved meanwhile (the old quote filled), the place is left to the next
-        decision, made on the new position."""
+        decision, made on the new position. That fill is seen only through the fill read: if
+        the venue's fills lag, the place still goes out, which is harmless (the fill was on the
+        other side, so the new quote is on the reducing side)."""
         what = f"cancel oid {q.oid} ({q.side} @ {q.px}) for {side} @ {px}"
         pos = self.ledger.position
         self._note_action()
