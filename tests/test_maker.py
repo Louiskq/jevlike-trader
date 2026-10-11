@@ -338,18 +338,50 @@ def test_refused_modify_keeps_the_old_quote_and_is_not_an_order_error():
     tr, store, clock, fake, _ = make_live()
     tick(tr, clock, T0)
     no_polls(tr, clock)
+    tr._kill._errors = 2  # a venue answer resets the count, as any answer does
     fake.bids = [[65001.0, 5.0]]
-    for i in range(1, 5):
-        fake.modify_response = _err_status(INVALID_MODIFY_ERR)
-        tick(tr, clock, T0 + i, bid=65001.0)  # each decision tries the modify to 65002 again
-    assert len(calls(fake, "modify")) == 4
+    fake.modify_response = _err_status(INVALID_MODIFY_ERR)
+    tick(tr, clock, T0 + 1, bid=65001.0)  # the modify to 65002 is refused
     q = tr.maker_view()["quote"]
     assert (q["oid"], q["side"], q["px"]) == (1000, "buy", 65001.0)  # the old order rests
-    assert events(store, "quote_refused")[0] == (
-        f"modify oid 1000 buy 0.00016 @ 65002: {INVALID_MODIFY_ERR}")
+    assert events(store, "quote_refused") == [
+        f"modify oid 1000 buy 0.00016 @ 65002: {INVALID_MODIFY_ERR}"]
     assert events(store, "order_error") == [] and tr._kill._errors == 0 and not tr.stopped
-    tick(tr, clock, T0 + 5, bid=65001.0)  # the venue accepts it this time
+    # the next re-quote of that order is a cancel and a place, never the same modify again
+    tick(tr, clock, T0 + 2, bid=64999.0)
+    assert [c[0] for c in quote_actions(fake)] == ["order", "modify", "bulk_cancel", "order"]
+    assert calls(fake, "bulk_cancel")[0][1] == [{"coin": "BTC", "oid": 1000}]
+    q = tr.maker_view()["quote"]
+    assert (q["oid"], q["side"], q["px"]) == (1001, "buy", 65000.0)
+    tick(tr, clock, T0 + 3, bid=65000.0)  # the new order can be modified again
+    assert [c[0] for c in quote_actions(fake)][-1] == "modify"
+    assert tr.maker_view()["quote"]["px"] == 65001.0
+
+
+def test_a_refused_quote_stays_unmodifiable_after_the_open_orders_check():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.bids = [[65001.0, 5.0]]
+    fake.modify_response = _err_status(INVALID_MODIFY_ERR)
+    tick(tr, clock, T0 + 1, bid=65001.0)  # refused
+    tr._last_reconcile = 0.0
+    tick(tr, clock, T0 + 2, bid=65001.0)  # the open orders are re-read, then the re-quote
+    assert [c[0] for c in quote_actions(fake)] == ["order", "modify", "bulk_cancel", "order"]
     assert tr.maker_view()["quote"]["px"] == 65002.0
+
+
+def test_a_refused_quote_needs_room_for_two_actions():
+    tr, store, clock, fake, _ = make_live()
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    fake.bids = [[65001.0, 5.0]]
+    fake.modify_response = _err_status(INVALID_MODIFY_ERR)
+    tick(tr, clock, T0 + 1, bid=65001.0)  # refused: 2 actions in the window
+    tr._actions += [clock.t] * 15  # 17: one more fits under 18, a cancel and a place do not
+    tick(tr, clock, T0 + 2, bid=65001.0)
+    assert [c[0] for c in quote_actions(fake)] == ["order", "modify"]
+    assert events(store, "action_cap")[-1] == "decision 3: buy @ 65002 not sent"
 
 
 def test_the_1744_live_sequence_ends_with_a_buy_resting_and_no_order_errors():

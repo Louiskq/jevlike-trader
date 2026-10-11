@@ -76,6 +76,7 @@ class Quote:
     px: Decimal
     remaining: float
     placed_ts: float
+    modifiable: bool = True  # False after the venue refused a modify of it: cancel and place
 
 
 def _sent(action: str, oid: int | None, side: str, sz: Decimal, px: Decimal) -> str:
@@ -310,8 +311,8 @@ class MakerTrader(Trader):
     async def _quote_to(self, book: Book, side: str, decision_id: int) -> None:
         """Keep one quote at the price for `side`: nothing if it is already there, one place if
         nothing rests, one modify for a new price on the same side, and a cancel then a place
-        for a side change (Hyperliquid refuses a side-changing modify), sent only if both
-        actions fit under the cap."""
+        for a side change (Hyperliquid refuses a side-changing modify) or for an order whose
+        modify was refused, sent only if both actions fit under the cap."""
         ex, meta = self._executor, self._executor.meta
         async with self._lock:
             if self._blocked():  # halted, paused or rate-paused while waiting for the lock
@@ -327,7 +328,7 @@ class MakerTrader(Trader):
             q = self._quote
             if q is not None and q.side == side and q.px == px:
                 return  # unchanged: keep the queue place
-            flip = q is not None and q.side != side
+            flip = q is not None and (q.side != side or not q.modifiable)
             if not self._room(2 if flip else 1):
                 self.store.log_event(self._clock(), "action_cap",
                                      f"decision {decision_id}: {side} @ {px} not sent")
@@ -335,7 +336,7 @@ class MakerTrader(Trader):
             sz = order_size(self.cfg.maker_size_usd, float(px), meta, self.cfg.min_notional_usd)
             self.latency["loop"].append((self._clock() - book.recv_ts) * 1000)
             if flip:
-                if not await self._cancel_for_side_change(q, side, px, decision_id):
+                if not await self._cancel_to_replace(q, side, px, decision_id):
                     return
                 q = None
             sent = _sent("place" if q is None else "modify", None if q is None else q.oid,
@@ -358,13 +359,14 @@ class MakerTrader(Trader):
             self.latency["action"].append((self._perf() - t0) * 1000)
             await self._on_ack(ack, side, sz, px, q)
 
-    async def _cancel_for_side_change(self, q: Quote, side: str, px: Decimal,
+    async def _cancel_to_replace(self, q: Quote, side: str, px: Decimal,
                                       decision_id: int) -> bool:
-        """The first half of a side change (caller holds the lock): cancel the resting quote,
-        book any fill it had, and say whether the place may follow. A failed cancel is an order
-        error and leaves the quote unknown (re-read before the next quote); a rate limit
-        cancels and pauses. If the position moved meanwhile (the old quote filled), the place
-        is left to the next decision, made on the new position."""
+        """The first half of a side change, or of the re-quote of an order whose modify was
+        refused (caller holds the lock): cancel the resting quote, book any fill it had, and say
+        whether the place may follow. A failed cancel is an order error and leaves the quote
+        unknown (re-read before the next quote); a rate limit cancels and pauses. If the
+        position moved meanwhile (the old quote filled), the place is left to the next
+        decision, made on the new position."""
         what = f"cancel oid {q.oid} ({q.side} @ {q.px}) for {side} @ {px}"
         pos = self.ledger.position
         self._note_action()
@@ -378,7 +380,8 @@ class MakerTrader(Trader):
                 self._quote = UNKNOWN
             return False
         self._quote = None
-        self.store.log_event(self._clock(), "quote_cancel", f"side change: {what}")
+        why = "side change" if q.side != side else "modify refused"
+        self.store.log_event(self._clock(), "quote_cancel", f"{why}: {what}")
         await self._sync_locked()
         if self._blocked():  # halted, paused or rate-paused during the cancel or the sync
             self._skip(decision_id, "halted or paused")
@@ -406,6 +409,8 @@ class MakerTrader(Trader):
         elif ack.status == "refused":  # the venue would not modify: the old order still rests
             self.store.log_event(self._clock(), "quote_refused", f"{sent}: {ack.detail}")
             self._quote = prev
+            if prev is not None:  # never the same modify again: the next re-quote replaces it
+                prev.modifiable = False
         elif ack.status == "gone":  # the order we modified had filled or was cancelled
             self.store.log_event(self._clock(), "quote_gone", f"{sent}: {ack.detail}")
             self._quote = None
@@ -578,7 +583,9 @@ class MakerTrader(Trader):
             placed = q.placed_ts if isinstance(q, Quote) else self._clock()
             if not isinstance(q, Quote):
                 self.store.log_event(self._clock(), "quote_adopted", f"oid {mine.oid}")
-            self._quote = Quote(mine.oid, mine.side, Decimal(str(mine.px)), mine.sz, placed)
+            modifiable = q.modifiable if isinstance(q, Quote) else True
+            self._quote = Quote(mine.oid, mine.side, Decimal(str(mine.px)), mine.sz, placed,
+                                modifiable)
             return
         self._quote = None
         if isinstance(q, Quote):
