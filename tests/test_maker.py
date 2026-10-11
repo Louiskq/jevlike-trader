@@ -299,6 +299,21 @@ def test_side_change_cancel_of_a_filled_order_books_the_fill_and_skips_the_place
     assert events(store, "order_error") == []
 
 
+def test_a_good_side_change_cancel_resets_the_order_error_count():
+    tr, store, clock, fake, model = make_live(cfg=replace(MCFG, max_position_usd=50.0))
+    tick(tr, clock, T0)
+    no_polls(tr, clock)
+    tr._kill._errors = 2
+    fake.taker_hits(1000, SZ)  # filled, unseen: the place after the cancel is skipped
+    model.p = 0.2
+    tick(tr, clock, T0 + 1)
+    assert events(store, "quote_skipped")[-1].startswith("decision 2: position changed")
+    assert tr._kill._errors == 0  # the cancel was a good order action
+    fake.fail_orders = [ConnectionError("blip")]
+    tick(tr, clock, T0 + 2)  # one order error after it does not stop the bot
+    assert not tr.stopped and tr._kill._errors == 1
+
+
 def test_side_change_cancel_then_halt_places_nothing():
     """The fill sync after the cancel is an await: a halt meanwhile stops the place."""
     tr, store, clock, fake, model = make_live()

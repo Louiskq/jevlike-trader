@@ -379,6 +379,7 @@ class MakerTrader(Trader):
                 self._order_failed(e, what)
                 self._quote = UNKNOWN
             return False
+        self._kill.on_order_result(True)  # a good order action, as any venue answer
         self._quote = None
         why = "side change" if q.side != side else "modify refused"
         self.store.log_event(self._clock(), "quote_cancel", f"{why}: {what}")
