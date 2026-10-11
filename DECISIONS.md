@@ -170,3 +170,20 @@ Decided by the builder, not chosen either way by the user: labels and the model'
 > **M8 / PR #17: three deliberate bugs passed every test** (stop cancel not counted, stray cancel not counted, scoring on the raw book). Caught by: reviewer (break-it). Fix: cbc93d8 (tests only).
 
 > **M8 / PR #17: decision mids included our own quote.** Caught by: builder during its own break-it pass. Fix: df3d294.
+
+## M9 / PR #19: decisions
+
+Made at the review gates (2026-10-11). The user gave no rationale ("no reason").
+
+- **Fix the side-change bug before rerunning the live maker hour** (the user's "go ahead"). Cause measured on testnet first: Hyperliquid refuses a modify that changes an order's side (`Attempted to modify to invalid new order`) and leaves the old order resting. A side change is now a cancel plus a new post-only order, counted as two order actions (spec 4ce087e). Rationale (user): none given.
+- **Fix R1 (a refused modify is never resent: the next re-quote cancels and places) and R2 (a successful cancel resets the order-error count); leave R3 as a documented limit** (a filled old quote is seen only through the fill read; if fills lag, the new quote still goes out, on the reducing side). Alternatives: all three; R1 only; none. Rationale (user): none given.
+
+Decided by the builder, not chosen either way by the user: after a side-change cancel, if the position moved (the old quote filled) the place is skipped and the next decision re-quotes; the "not modifiable" mark on a refused quote survives the 15 s open-orders check.
+
+## M9 / PR #19: caught mistakes
+
+> **M8 / PR #17 shipped a maker that changed side by modify, which Hyperliquid refuses.** Caught by: the 1-hour live testnet run (kill=order_errors after 14 min), cause found by the orchestrator from the run's events and a testnet probe. Fix: f862024. Prevention: `test_side_change_cancels_then_places_not_modify`, `test_the_1744_live_sequence_ends_with_a_buy_resting_and_no_order_errors`; the paper and fake venues now refuse a side-changing modify.
+
+> **M9 / PR #19: a refused modify would have been resent at every decision, forever.** Caught by: reviewer (R1). Fix: d0a1eb3. Prevention: the R1 tests in tests/test_maker.py, including `test_a_refused_quote_stays_unmodifiable_after_the_open_orders_check`.
+
+> **M9 / PR #19: a successful side-change cancel did not reset the order-error count.** Caught by: reviewer (R2). Fix: 8149333.

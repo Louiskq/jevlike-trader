@@ -4,9 +4,9 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 8 (maker strategy) PR #17 ready, waiting for merge
-- Next action: after merge: tag v0.8; 1-hour live maker run on the VM (needs model job + VM clifton cert); then step 6 evidence and step 7 README
-- Waiting on: user merge of PR #17
+- Current milestone: 9 (maker side changes), issue #18, branch fix/m9-side-change
+- Next action: M9 build, PR, review; then rerun the 1 h live maker run on the VM; then step 6 evidence and step 7 README
+- Waiting on: user merge of PR #19
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -18,7 +18,8 @@
 | 5 | Decider backend and soak | #5 | PR #11 | merged, v0.5; soak pending |
 | 6 | Flatten retry after network loss | #12 | PR #13 | merged, v0.6; live check pending |
 | 7 | Recover from a stalled feed | #14 | PR #15 | merged, v0.7; live check pending |
-| 8 | Maker strategy | #16 | PR #17 | at merge gate |
+| 8 | Maker strategy | #16 | PR #17 | merged, v0.8; live maker run pending |
+| 9 | Maker side changes cancel and re-place | #18 | PR #19 | ready for merge |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -112,3 +113,11 @@
 - 2026-10-10: M8 spec (f245791 -> rewritten), plan approved with user answers (scoring per changed book, paper fills through price, 1 s maker deadline; other defaults accepted). Built (836 tests, 74 break-it mutants caught); builder hit a usage limit once and was resumed. GitHub GH007 blocked the push (private email); USER chose the noreply address: repo-local user.email set to 102479386+Louiskq@users.noreply.github.com and the 9 unpushed commits re-authored (new hashes: spec 39cf663, fix df3d294, tests 38c2c79, build record 2c1e076). Draft PR #17; reviewer started.
 - 2026-10-10: M8 30-min maker paper dry run (pre-review code, mock model) PASSED: 1800 decisions, gap p50 1.00 s, 0 late, 0 errors, 442 quote actions (~14.7/min) with 318 action_cap events (mock flips near 0.5), 50 paper fills, fees $0.0740, REST book p50 228 ms, loop p50 3.5 ms, 2 trades-socket reconnects, clean stop. Review R1-R5: user chose fix all five; builder working.
 - 2026-10-11: M8 review fixes (a30df8e..cbc93d8) verified (863 tests, ruff clean), pushed; user: no reason; kept strict cap (18 quotes/min, stop waits); PR #17 ready, review trail posted.
+- 2026-10-11: PR #17 merged (e0c79cf); main verified (863 tests, ruff clean); v0.8 released.
+- 2026-10-11: VM clifton cert renewed (two device codes expired first; third approved), valid to 05:22 UTC. Stale port-8000 forward from 10-10 lived on in the VM's ssh ControlMaster (pid 729790); replaced with ssh -O cancel/forward. Maker paper smoke with the model: 60 decisions, latency p50 86 ms, 1 late (1 s deadline), 3 quote actions. Live 1 h maker run started 17:30 UTC.
+- 2026-10-11: live maker run (maker_live.db on VM) STOPPED at 17:44 UTC after 14 min: kill=order_errors after 3x 'Attempted to modify to invalid new order' on adopted sell oid 62440039299 (after buy fill 17:44:05 at 82947 and a quote_gone). Ended safe: flat, 0 open orders, reconcile OK (6 fills, all maker, fees $0.009694 = 1.50 bps, closedPnl -$0.0101 both). Verified live: Alo resting quotes, post-only rejection text ('Post only order would have immediately matched, bbo was ...'), maker fee 0.015%, kill switch cancels resting orders. Modify latency p50 628 ms. Cause of the invalid modify not yet known (bot does not log the attempted params on error). GPU job cancelled, forward closed.
+- 2026-10-11: cause found: all 3 failed modifies flipped sell->buy; no side-changing modify succeeded in the run. Testnet probe (scratch probe_modify.py, one Alo 2% from mid, cancelled): same-side modify ok, side-flip modify -> 'Attempted to modify to invalid new order', original order left resting. User: go ahead with the fix. M9 issue #18, branch fix/m9-side-change, mode Normal; builder launched.
+- 2026-10-11: M9 built (4ce087e spec, f862024 fix; 880 tests, 18 break-it mutants caught; verified by orchestrator: 880 pass, ruff clean). Pushed, draft PR #19; reviewer started.
+- 2026-10-11: M9 reviewer: first two attempts stalled (watchdog), second resumed and finished (.pipeline/m9-review.md): R1 should-fix (refused same-side modify retried forever), R2/R3 nits; B1-B9 all caught. At review gate.
+- 2026-10-11: review gate: user chose fix R1 and R2 (R3 documented as a limit). Builder resumed for the fixes.
+- 2026-10-11: R1 d0a1eb3, R2 8149333, R3 doc a1504ca, test 4277e2c; verified (884 tests, ruff clean). Decisions gate: user 'no reason'. DECISIONS.md, PR description, inline review written; records commit next.
