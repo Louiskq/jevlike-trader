@@ -2,10 +2,10 @@
 
 Built (issue #16, plan .pipeline/m8-plan.md): STRATEGY=maker next to the unchanged taker (default). REST l2Book about once a second (20 levels, never two in flight, missed slots skipped) plus the WS trades channel on its own socket, kept in a tid-deduped tape. Richer prompt in prompt.py, marked as the assistant's DRAFT for the user to edit. MakerTrader (Trader subclass, src/jevhl/maker.py) keeps one post-only (Alo) quote one tick inside the touch, our own order removed from the book first; replaced only when side or price changes (one modify, or one place if nothing rests). Every stop (stale pause, kill, shutdown) cancels resting orders first and is never blocked by the 20/min action cap. Paper quotes fill only on prints through the price (0.015% maker fee). Dashboard, reconcile (maker/taker split from `crossed`, open orders) and soak report handle the maker. The builder was cut off once by a usage limit and resumed.
 
-Commits: 701bce5 building blocks (config, pricing, REST book, trades feed); fcc523c venue support (Alo, live and paper); 86c7161 prompt DRAFT and renderer; d53862a maker loop; b74a940 run/dashboard/reconcile/soak; 5c0f14c Fix: decision and outcome mids exclude our own quote; 1a39889 test gaps from break-it. No Co-Authored-By.
+Commits: b676468 building blocks (config, pricing, REST book, trades feed); 3595458 venue support (Alo, live and paper); f8106ff prompt DRAFT and renderer; db695cc maker loop; f7799f6 run/dashboard/reconcile/soak; df3d294 Fix: decision and outcome mids exclude our own quote; 38c2c79 test gaps from break-it. No Co-Authored-By.
 
 Deviations from SPEC/plan:
-- Labels use the mid without our own quote (5c0f14c; spec silent): live, our quote one tick inside moves the raw mid toward our side, which follows p_up, and would bias calibration.
+- Labels use the mid without our own quote (df3d294; spec silent): live, our quote one tick inside moves the raw mid toward our side, which follows p_up, and would bias calibration.
 - Flatten IOCs are not counted in the action window (plan said they would be).
 - "Changed book" for scoring = any of the 20 levels (price or size) differs, on the book the model saw; holds without p_up never become the last scored book; scoring state is in memory only (no schema change).
 - A gone or rejected modify waits for the next decision instead of re-placing at once.
