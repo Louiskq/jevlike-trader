@@ -34,7 +34,7 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 | Strategy | `STRATEGY=taker` (default: everything above, unchanged) or `STRATEGY=maker`, sharing the feed, model, ledger, kill switch, reconcile and dashboard |
 | Maker cadence | About one decision per second, on a REST `l2Book` snapshot plus the trades received since the last decision (WS `trades` subscription). Measured 2026-10-10: testnet's WS book updates only every ~5.25 s and the REST top of book changed twice in 15 s, so most seconds repeat the same book |
 | Maker action | Always buy or sell: buy if `p_up >= 0.5`, else sell. Hold only when the model is late or its answer invalid. When the position cap blocks a side, the quote goes on the other side (logged as capped) |
-| Maker order | One post-only (Hyperliquid `Alo`) limit order on the model's side, one tick inside the touch (at the touch when the spread is one tick). It is replaced only when the side or the quote price changes, so an unchanged quote keeps its queue place |
+| Maker order | One post-only (Hyperliquid `Alo`) limit order on the model's side, one tick inside the touch (at the touch when the spread is one tick). It is replaced only when the side or the quote price changes, so an unchanged quote keeps its queue place. A price change on the same side is one modify; a side change is a cancel plus a new post-only order (milestone 9: Hyperliquid refuses a side-changing modify, measured 2026-10-11) |
 | Maker prompt | Jarrod-style state: book imbalance, depth at several distances from mid, top levels, returns over several windows, recent mids, taker trades (buy and sell volume, net flow, last prints), plus short instructions. Drafted by the assistant for the user to edit (a modelling decision). The taker strategy keeps its current prompt |
 | Maker scoring | Calibration scores a maker decision only when the book it saw differs from the last scored one, so ~60 overlapping decisions per window do not inflate the sample count (user decision 2026-10-10) |
 | Maker deadline | `MAKER_DECIDER_DEADLINE_S` default 1 s (user decision 2026-10-10); taker keeps 2 s |
@@ -44,7 +44,8 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 - No time exit in maker mode: the position is reduced by quoting the other side, as in Jarrod's bot; kill switch and shutdown still cancel all and flatten.
 - On a late or invalid answer the resting quote is left as it is; on a stale book, a kill or shutdown, every resting order is cancelled first.
 - A rejected post-only order (it would have crossed) is logged and re-priced at the next decision.
-- Order actions capped at 20 per minute (modify when possible); on a rate-limit error the bot cancels and pauses quoting. Per-address request budget logged.
+- Order actions capped at 20 per minute (modify when possible; a side change counts as two actions, its cancel and its place, and is sent only when both fit); on a rate-limit error the bot cancels and pauses quoting. Per-address request budget logged.
+- If the venue still refuses a modify (`Attempted to modify to invalid new order`), the old order is still resting (measured 2026-10-11): it stays tracked, the answer is logged and is not an order error, and the next decision re-quotes.
 - Paper fills: the resting quote fills only when a real trade print goes through its price (others are queued ahead at that price; user decision 2026-10-10, stricter than the first draft); maker fee 0.015% until verified on testnet.
 
 ## Design proposal
