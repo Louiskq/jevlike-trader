@@ -13,10 +13,12 @@ account address, because the API wallet only signs and querying its address retu
 Not verified without an account: the exact text of an IOC "nothing matched" error and whether
 reduce-only orders below $10 notional are exempt from the minimum.
 
-Not verified without a live maker run (the parser matches these texts, see
-parse_quote_response): the post-only rejection text, the reply to a modify (its statuses, or a
-bare `default`) and whether it keeps the oid, the "cannot modify" text, and the rate-limit
-error forms.
+Measured on testnet (2026-10-11): a post-only modify on the same side answers `resting` with a
+NEW oid; a modify that changes the side answers `Attempted to modify to invalid new order` and
+the original order stays resting unchanged, so the maker changes side by cancel and place. Not
+verified without a live maker run (the parser matches these texts, see parse_quote_response):
+the post-only rejection text, a modify reply without statuses (a bare `default`), the "cannot
+modify" text, and the rate-limit error forms.
 
 No transfer or withdrawal code lives here, and only the testnet URL.
 """
@@ -117,9 +119,9 @@ def _rate_text(text: str) -> bool:
 
 
 def parse_quote_response(resp: object) -> QuoteAck:
-    """The answer to one post-only order or one modify. A post-only rejection or a gone order
-    is a normal outcome (an ack, not an error); a rate limit raises RateLimited; anything else
-    unexpected raises ExchangeError."""
+    """The answer to one post-only order or one modify. A post-only rejection, a gone order or a
+    refused modify is a normal outcome (an ack, not an error); a rate limit raises RateLimited;
+    anything else unexpected raises ExchangeError."""
     if not isinstance(resp, dict) or resp.get("status") != "ok":
         detail = repr(resp.get("response") if isinstance(resp, dict) else resp)
         if _rate_text(detail):
@@ -147,6 +149,8 @@ def parse_quote_response(resp: object) -> QuoteAck:
                 return QuoteAck("rejected", None, err)
             if "canceled or filled" in low or "already canceled" in low:
                 return QuoteAck("gone", None, err)
+            if "invalid new order" in low:  # e.g. a side change: the old order still rests
+                return QuoteAck("refused", None, err)
             if _rate_text(err):
                 raise RateLimited(err)
             raise ExchangeError(f"quote error: {err}")
@@ -323,7 +327,9 @@ class Exchange:
 
     def modify_quote(self, oid: int, side: str, sz: Decimal, px: Decimal, book: Book | None,
                      ts: float) -> QuoteAck:
-        """Move a resting quote (one batchModify action; it can change price and side)."""
+        """Move a resting quote to a new price on the same side (one batchModify action).
+        Hyperliquid refuses a modify that changes the side (measured 2026-10-11: the answer is
+        "refused" and the order stays as it was), so the maker cancels and places instead."""
         return self._quote_call(lambda: self._sdk.modify_order(
             oid, self.coin, side == "buy", float(sz), float(px), ALO
         ))

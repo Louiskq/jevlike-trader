@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from fake_hl import ALO, GONE_ERR, HTTP429, FakeHL, _err_status
+from fake_hl import ALO, GONE_ERR, HTTP429, INVALID_MODIFY_ERR, FakeHL, _err_status
 from jevhl.exchange import Exchange, ExchangeError, RateLimited, parse_quote_response
 from jevhl.feed import Book, Print
 from jevhl.paper import MAKER_FEE_RATE, PaperExchange
@@ -39,6 +39,13 @@ def test_parse_post_only_rejection():
 @pytest.mark.parametrize("text", [GONE_ERR, "Order was never placed, already canceled, or filled."])
 def test_parse_modify_of_a_canceled_or_filled_order_is_gone(text):
     assert parse_quote_response(ok({"error": text})).status == "gone"
+
+
+def test_parse_side_changing_modify_answer_is_refused():
+    """Measured on testnet 2026-10-11: a modify that changes the side answers with this
+    error and the original order stays resting."""
+    ack = parse_quote_response(ok({"error": INVALID_MODIFY_ERR}))
+    assert ack == QuoteAck("refused", None, INVALID_MODIFY_ERR)
 
 
 def test_parse_filled_status_is_reported_as_taken():
@@ -104,11 +111,19 @@ def test_live_crossing_quote_is_rejected_not_raised():
 def test_modify_sends_one_batch_modify_with_alo_and_returns_the_new_oid():
     ex, fake = live()
     ex.place_quote("buy", SZ, Decimal("65001"), None, 0.0)
-    ack = ex.modify_quote(1000, "sell", SZ, Decimal("65002"), None, 0.0)
+    ack = ex.modify_quote(1000, "buy", SZ, Decimal("65002"), None, 0.0)
     assert ack == QuoteAck("placed", 1001, "")
     (call,) = [c for c in fake.calls if c[0] == "modify"]
-    assert call == ("modify", 1000, "BTC", False, 0.00013, 65002.0, ALO, False)
-    assert ex.open_quotes() == [OpenQuote(1001, "sell", 65002.0, 0.00013)]
+    assert call == ("modify", 1000, "BTC", True, 0.00013, 65002.0, ALO, False)
+    assert ex.open_quotes() == [OpenQuote(1001, "buy", 65002.0, 0.00013)]
+
+
+def test_live_side_changing_modify_is_refused_and_the_order_stays():
+    ex, fake = live()
+    ex.place_quote("buy", SZ, Decimal("65001"), None, 0.0)
+    ack = ex.modify_quote(1000, "sell", SZ, Decimal("65002"), None, 0.0)
+    assert ack.status == "refused" and ack.oid is None
+    assert ex.open_quotes() == [OpenQuote(1000, "buy", 65001.0, 0.00013)]
 
 
 def test_modify_of_a_gone_order_reports_gone():
@@ -265,6 +280,16 @@ def test_paper_modify_moves_the_quote_and_loses_the_queue_place(paper):
     assert (q.oid, q.px) == (ack.oid, 102.0)
     assert ex.match_prints([prt(1, "sell", 99.0, ts=25.0)]) == []  # before the modify
     assert len(ex.match_prints([prt(2, "sell", 99.0, ts=31.0)])) == 1
+
+
+def test_paper_side_changing_modify_is_refused_and_the_order_stays(paper):
+    """As on Hyperliquid, so paper runs exercise the maker's cancel-and-place path."""
+    ex, _ = paper
+    oid = ex.place_quote("buy", Decimal("1"), Decimal("101"), book(), 10.0).oid
+    ack = ex.modify_quote(oid, "sell", Decimal("1"), Decimal("102"), book(), 30.0)
+    assert ack.status == "refused" and ack.oid is None
+    assert ex.open_quotes() == [OpenQuote(oid, "buy", 101.0, 1.0)]
+    assert len(ex.match_prints([prt(1, "sell", 99.0, ts=25.0)])) == 1  # its queue place kept
 
 
 def test_paper_modify_of_a_filled_or_unknown_order_is_gone(paper):

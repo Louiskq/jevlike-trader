@@ -11,6 +11,7 @@ MAKER_FEE_RATE = 0.00015
 ALO = {"limit": {"tif": "Alo"}}
 POST_ONLY_ERR = "Post only order would have immediately matched, bbo was {bid}@{ask}. asset=0"
 GONE_ERR = "Cannot modify canceled or filled order"
+INVALID_MODIFY_ERR = "Attempted to modify to invalid new order"  # a side change (measured)
 
 
 class HTTP429(Exception):
@@ -45,7 +46,7 @@ class FakeHL:
         # maker knobs (milestone 8)
         self.modify_response: dict | None = None  # overrides the next modify response
         self.fail_modify: list[Exception] = []
-        self.new_oid_on_modify = True  # a modify answers with a fresh oid (unverified on HL)
+        self.new_oid_on_modify = True  # a modify answers with a fresh oid (measured 2026-10-11)
         self.rate_limit = {"cumVlm": "1234.5", "nRequestsUsed": 321, "nRequestsCap": 11234}
 
     def _tick(self) -> int:
@@ -117,6 +118,8 @@ class FakeHL:
         old = [o for o in self.resting if o["oid"] == oid]
         if not old:
             return _err_status(GONE_ERR)
+        if (old[0]["side"] == "B") != is_buy:  # measured: refused, the order stays as it was
+            return _err_status(INVALID_MODIFY_ERR)
         self.resting.remove(old[0])  # assumed: a crossing modify leaves no order behind
         return self._rest(name, is_buy, sz, limit_px, None if self.new_oid_on_modify else oid)
 

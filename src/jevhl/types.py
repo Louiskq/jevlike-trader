@@ -80,7 +80,8 @@ class ModelOutput:
 class QuoteAck:
     """The venue's answer to a post-only quote or a modify (milestone 8). status:
     placed (resting, oid), rejected (post-only would have crossed), gone (the order to modify
-    was already filled or cancelled), filled (it took liquidity; should never happen for a
+    was already filled or cancelled), refused (the venue would not make the modify, e.g. a side
+    change; the old order still rests), filled (it took liquidity; should never happen for a
     post-only order), unknown (a reply without an order status: re-read the open orders)."""
 
     status: str
