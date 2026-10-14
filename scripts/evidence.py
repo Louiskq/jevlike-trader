@@ -220,6 +220,28 @@ def verdict(lo: float | None, hi: float | None, n_blocks: float) -> str:
     return "no difference shown"
 
 
+def binom_tail(n: int, p: float, k: int) -> float:
+    """P(X >= k) for X ~ Binomial(n, p)."""
+    return sum(math.comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k, n + 1))
+
+
+def chance_note(verdicts: Sequence[str], level: float = 0.95) -> str:
+    """How many of several intervals exclude zero, against what chance alone would give if
+    there were no real differences (each 95% interval misses zero 5% of the time). The
+    intervals share data, so this is a rough guide, not an exact test."""
+    n = len(verdicts)
+    below = sum(v == "better than baseline" for v in verdicts)
+    above = sum(v == "worse than baseline" for v in verdicts)
+    few = sum(v == "too few samples" for v in verdicts)
+    tail = binom_tail(n, 1 - level, below + above)
+    note = (f"{below + above} of {n} intervals at {level:.0%} exclude zero ({below} below, "
+            f"{above} above; {few} too few samples to read); about {n * (1 - level):.1f} would "
+            f"by chance alone, and {below + above} or more would {tail:.0%} of the time")
+    if tail >= 1 - level:
+        note += ", so the cells below zero are not evidence of an edge"
+    return note
+
+
 def gate_sweep(ps: Sequence[float], ys: Sequence[int], gates: Sequence[float]) -> list[dict]:
     """For each gate, the decisions the taker would trade (p >= gate buys, p <= 1 - gate
     sells): count, Brier, hit rate (the side matched the label) and share of up labels."""
@@ -926,6 +948,7 @@ def _diff_cell(r: dict) -> str:
 def e6_baselines(stores: dict[str, Store], sc: dict) -> tuple[str, str]:
     test_rows, diff_rows, perm_rows, auc_rows = [], [], [], []
     beat_base: list[str] = []  # forecast and cell where the interval is below zero
+    oos_verdicts: list[str] = []  # every out-of-sample interval, for the chance count
     auc_above: list[str] = []
     for k in CALIBRATION:
         decs = stores[k].decisions()
@@ -947,8 +970,9 @@ def e6_baselines(stores: dict[str, Store], sc: dict) -> tuple[str, str]:
                               num(brier(iso_te, ys_te))])
             cmp = {name: _vs_base(fc, base_te, ys_te, s.block) for name, fc in
                    (("model", s.ps[te]), ("B3 momentum", mom_te), ("A2 recalibrated", iso_te))}
-            beat_base += [f"{name} {k} {h} s" for name, r in cmp.items()
-                          if r["verdict"] == "better than baseline"]
+            beat_base += [f"{name} {k} {h} s (upper bound {r['hi']:+.4f})"
+                          for name, r in cmp.items() if r["verdict"] == "better than baseline"]
+            oos_verdicts += [r["verdict"] for r in cmp.values()]
             diff_rows.append([k, f"{h} s", f"{len(ys_te) / s.block:.0f}"]
                              + [_diff_cell(r) for r in cmp.values()])
             p_val, null = permutation_pvalue(s.ps, s.ys, N_PERM, SEED)
@@ -968,6 +992,7 @@ def e6_baselines(stores: dict[str, Store], sc: dict) -> tuple[str, str]:
         for g in gate_sweep(s3[h].ps, s3[h].ys, GATES):
             gate_rows.append([f"{h} s", f"{g['gate']:.2f}", g["n"], g["n_buy"], g["n_sell"],
                               num(g["brier"]), pct(g["hit_rate"]), pct(g["up_rate"])])
+    chance = chance_note(oos_verdicts)
     g60 = {g["gate"]: g for g in gate_sweep(s3[60].ps, s3[60].ys, GATES)}
     tail_better = g60[0.60]["brier"] < g60[0.50]["brier"]
     r6w = sc[("R6", 60)].windows()
@@ -1010,6 +1035,8 @@ with a 95% moving-block bootstrap interval (blocks one horizon long, {N_BOOT} re
        diff_rows)}
 
 Intervals below zero (beat the base rate out of sample): {", ".join(beat_base) or "none"}.
+Across the whole table, {chance}. The fitted rows (B3, A2) also gain a little from the overlap
+at the split.
 
 ## A1 permutation: does the order of the model's forecasts carry information?
 
@@ -1058,7 +1085,7 @@ market conditions.
     headline = (
         f"Model or recalibrated model beat the base rate out of sample in: "
         f"{', '.join(model_beat) or 'no cell'}; the one-line momentum heuristic in: "
-        f"{', '.join(mom_beat) or 'no cell'}. AUC interval above 0.5: "
+        f"{', '.join(mom_beat) or 'no cell'}; {chance}. AUC interval above 0.5: "
         f"{', '.join(auc_above) or 'none'}"
         + (" (a lead from one 1-hour run, not an edge)" if auc_above else "")
         + f". R3's would-be trades at gate 0.60 were {'better' if tail_better else 'no better'}"

@@ -245,3 +245,31 @@ def test_verdict_refuses_to_judge_with_fewer_than_ten_blocks():
     assert ev.verdict(0.19, 0.19, 1.0) == "too few samples"
     assert ev.verdict(0.01, 0.03, 9.9) == "too few samples"
     assert ev.verdict(None, None, 50) == "too few samples"
+
+
+# ---- many intervals at once ----
+
+
+def test_binomial_tail():
+    assert ev.binom_tail(18, 0.05, 0) == pytest.approx(1.0)
+    assert ev.binom_tail(18, 0.05, 1) == pytest.approx(1 - 0.95**18)
+    assert ev.binom_tail(2, 0.5, 2) == pytest.approx(0.25)
+
+
+def test_chance_note_says_one_of_eighteen_is_not_evidence():
+    note = ev.chance_note(["better than baseline"] + ["no difference shown"] * 17)
+    assert "1 of 18 intervals" in note
+    assert "about 0.9" in note
+    assert "not evidence of an edge" in note
+
+
+def test_chance_note_does_not_dismiss_many_exclusions():
+    note = ev.chance_note(["better than baseline"] * 10 + ["no difference shown"] * 8)
+    assert "10 of 18 intervals" in note
+    assert "not evidence" not in note
+
+
+def test_chance_note_counts_too_few_samples_as_tests_but_not_as_exclusions():
+    note = ev.chance_note(["too few samples"] * 3 + ["worse than baseline"]
+                          + ["no difference shown"] * 14)
+    assert "1 of 18 intervals" in note and "3 too few samples to read" in note
