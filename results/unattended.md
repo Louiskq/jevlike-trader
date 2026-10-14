@@ -2,8 +2,8 @@
 # E4 Unattended run (R3)
 
 R3: taker, real model, live testnet, on the VM, 2026-10-10 15:19:24 UTC to
-2026-10-10 17:19:27 UTC. It was a 2-hour run, not overnight: the user decided on 2026-10-10 that
-2 hours unattended was enough for now.
+2026-10-10 17:19:27 UTC (2.0 h). It was not an overnight run: the user decided on
+2026-10-10 that 2 hours unattended was enough for now.
 
 | Measure | R3 |
 |---|---|
@@ -18,9 +18,7 @@ R3: taker, real model, live testnet, on the VM, 2026-10-10 15:19:24 UTC to
 | Websocket reconnects | 10 (server-side "Expired" closes) |
 | Orders skipped by the bot's own 2-a-minute limit | 424 |
 
-MB here is 1000 kB, as in the run reports. Memory rose in small steps through the whole run
-and had not visibly levelled off by the end; two hours cannot tell a slow leak of this size
-from warm-up. It is small: at this rate a 10-hour run would add about 4 MB.
+MB here is 1000 kB, as in the run reports. Memory was still rising in the last quarter of the run (quarter means above), so it had not levelled off by the end; a run this short cannot tell a slow leak of this size from warm-up. At this rate a 10-hour run would add about 4 MB.
 
 The process stopped cleanly on Ctrl-C at the end (exit 130); that is from the PIPELINE.md log,
 since the database cannot record its own exit.

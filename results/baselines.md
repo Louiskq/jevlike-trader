@@ -2,7 +2,7 @@
 # E6 Baselines and ablations (offline, from the stored forecasts)
 
 Computed from the stored `p_up`, decision mids and outcomes of the two calibration runs (R3
-taker, R6 maker). Overlap: consecutive decisions share most of their outcome window (a taker decision every ~5.3 s against a 60 s horizon shares it with about 11 neighbours; the maker scores one decision per changed book, about one every 1-2 s). Sample counts below are decisions, not independent samples; the "windows" column (scored time span / horizon) is a rough count of non-overlapping outcome windows. Longer horizons overlap more.
+taker, R6 maker). Overlap: consecutive decisions share most of their outcome window. In R3 a scored taker decision came every 5.3 s (median), so about 11 decisions fall inside one 60 s window; R6 scored a maker decision every 1.0 s (median; 2.2 s mean, since it scores only changed books). Sample counts below are decisions, not independent samples; the "windows" column (scored time span / horizon) is a rough count of non-overlapping outcome windows. Longer horizons overlap more.
 
 ## Out-of-sample comparison (fit on the first half of each run, scored on the second)
 
@@ -19,12 +19,12 @@ horizon, a small leak in favour of the fitted rows (B3, A2).
 
 | Run | Horizon | n fit | n test | Model | B1 0.5 | B2 base rate | B3 momentum | A2 recalibrated model |
 |---|---|---|---|---|---|---|---|---|
-| R3 | 30 s | 514 | 514 | 0.2625 | 0.2500 | 0.2623 | 0.2451 (k=+0.090) | 0.2859 |
-| R3 | 60 s | 604 | 605 | 0.2671 | 0.2500 | 0.2567 | 0.2477 (k=+0.128) | 0.2525 |
-| R3 | 300 s | 650 | 651 | 0.2676 | 0.2500 | 0.2722 | 0.2481 (k=+0.073) | 0.2954 |
-| R6 | 30 s | 614 | 614 | 0.2432 | 0.2500 | 0.2502 | 0.2367 (k=+0.066) | 0.2358 |
-| R6 | 60 s | 800 | 800 | 0.2509 | 0.2500 | 0.2551 | 0.2581 (k=-0.032) | 0.2360 |
-| R6 | 300 s | 1108 | 1109 | 0.3178 | 0.2500 | 0.2530 | 0.2493 (k=-0.073) | 0.2728 |
+| R3 | 30 s | 514 | 514 | 0.2625 | 0.2500 | 0.2623 | 0.2451 (k=+0.090) | 0.2800 |
+| R3 | 60 s | 604 | 605 | 0.2671 | 0.2500 | 0.2567 | 0.2477 (k=+0.128) | 0.2545 |
+| R3 | 300 s | 650 | 651 | 0.2676 | 0.2500 | 0.2722 | 0.2481 (k=+0.073) | 0.2948 |
+| R6 | 30 s | 614 | 614 | 0.2432 | 0.2500 | 0.2502 | 0.2367 (k=+0.066) | 0.2383 |
+| R6 | 60 s | 800 | 800 | 0.2509 | 0.2500 | 0.2551 | 0.2581 (k=-0.032) | 0.2312 |
+| R6 | 300 s | 1108 | 1109 | 0.3178 | 0.2500 | 0.2530 | 0.2493 (k=-0.073) | 0.2701 |
 
 The same second halves as differences from B2 (Brier minus B2's Brier; below zero is better),
 with a 95% moving-block bootstrap interval (blocks one horizon long, 2000 resamples, seed
@@ -32,14 +32,16 @@ with a 95% moving-block bootstrap interval (blocks one horizon long, 2000 resamp
 
 | Run | Horizon | Blocks | Model - B2 | B3 momentum - B2 | A2 recalibrated - B2 |
 |---|---|---|---|---|---|
-| R3 | 30 s | 86 | +0.0002 [-0.0324, +0.0338] no difference shown | -0.0172 [-0.0334, -0.0004] better than baseline | +0.0236 [+0.0032, +0.0439] worse than baseline |
-| R3 | 60 s | 50 | +0.0104 [-0.0321, +0.0557] no difference shown | -0.0090 [-0.0291, +0.0168] no difference shown | -0.0042 [-0.0190, +0.0108] no difference shown |
-| R3 | 300 s | 11 | -0.0046 [-0.1181, +0.1037] no difference shown | -0.0242 [-0.0873, +0.0489] no difference shown | +0.0232 [-0.0089, +0.0629] no difference shown |
-| R6 | 30 s | 20 | -0.0070 [-0.0653, +0.0592] no difference shown | -0.0135 [-0.0291, +0.0041] no difference shown | -0.0145 [-0.0511, +0.0443] no difference shown |
-| R6 | 60 s | 13 | -0.0042 [-0.0843, +0.0905] no difference shown | +0.0031 [-0.0063, +0.0169] no difference shown | -0.0190 [-0.0570, +0.0370] no difference shown |
-| R6 | 300 s | 4 | +0.0648 [-0.0313, +0.1701] too few samples | -0.0037 [-0.0116, +0.0151] too few samples | +0.0198 [-0.0105, +0.0304] too few samples |
+| R3 | 30 s | 86 | +0.0002 [-0.0324, +0.0338] no difference shown | -0.0172 [-0.0334, -0.0004] better than baseline | +0.0177 [+0.0033, +0.0321] worse than baseline |
+| R3 | 60 s | 50 | +0.0104 [-0.0321, +0.0557] no difference shown | -0.0090 [-0.0291, +0.0168] no difference shown | -0.0022 [-0.0126, +0.0079] no difference shown |
+| R3 | 300 s | 11 | -0.0046 [-0.1181, +0.1037] no difference shown | -0.0242 [-0.0873, +0.0489] no difference shown | +0.0226 [-0.0090, +0.0624] no difference shown |
+| R6 | 30 s | 20 | -0.0070 [-0.0653, +0.0592] no difference shown | -0.0135 [-0.0291, +0.0041] no difference shown | -0.0119 [-0.0488, +0.0483] no difference shown |
+| R6 | 60 s | 13 | -0.0042 [-0.0843, +0.0905] no difference shown | +0.0031 [-0.0063, +0.0169] no difference shown | -0.0239 [-0.0578, +0.0252] no difference shown |
+| R6 | 300 s | 4 | +0.0648 [-0.0313, +0.1701] too few samples | -0.0037 [-0.0116, +0.0151] too few samples | +0.0171 [-0.0110, +0.0262] too few samples |
 
-Intervals below zero (beat the base rate out of sample): B3 momentum R3 30 s.
+Intervals below zero (beat the base rate out of sample): B3 momentum R3 30 s (upper bound -0.0004).
+Across the whole table, 2 of 18 intervals at 95% exclude zero (1 below, 1 above; 3 too few samples to read); about 0.9 would by chance alone, and 2 or more would 23% of the time, so the cells below zero are not evidence of an edge. The fitted rows (B3, A2) also gain a little from the overlap
+at the split.
 
 ## A1 permutation: does the order of the model's forecasts carry information?
 
@@ -74,7 +76,7 @@ random order.
 
 AUC interval above 0.5 (with at least 10 blocks): R6 30 s (0.686), R6 60 s (0.647).
 
-What this does and does not show: where the AUC interval sits above 0.5, the model's forecasts ordered ups above downs better than chance in that run, even though its Brier was no better than the base rate (its probabilities leaned down; see E5), and recalibrating them on the first half did not give an interval below the base rate on the second. R6 is one hour (about 58 non-overlapping 60 s windows) on testnet, and this analysis was chosen after seeing the run-level Brier results. It is a lead to test on new runs, not a demonstrated edge. It does not say where the ordering comes from; short-lived effects of a thin testnet book are one possibility not examined here.
+What this does and does not show: where the AUC interval sits above 0.5, the model's forecasts ordered ups above downs better than chance in that run. Per cell: R6 30 s: Brier against the base rate no difference shown (E5), mean `p_up` 0.349 against an up share of 0.495, recalibrated on the first half did not beat the base rate on the second (interval not below zero); about 117 non-overlapping 30 s windows; R6 60 s: Brier against the base rate no difference shown (E5), mean `p_up` 0.350 against an up share of 0.511, recalibrated on the first half did not beat the base rate on the second (interval not below zero); about 58 non-overlapping 60 s windows. This comes from R6 (1.0 h) on testnet, and this analysis was chosen after seeing the run-level Brier results. It is a lead to test on new runs, not a demonstrated edge. It does not say where the ordering comes from; short-lived effects of a thin testnet book are one possibility not examined here.
 
 ## A3 gate sweep (R3 taker only)
 

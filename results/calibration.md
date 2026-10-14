@@ -7,7 +7,7 @@ dashboard. The baseline is the running base rate: at each decision, the share of
 seen so far in that run (0.5 at the start), so it never sees the future. A model with skill
 has a lower Brier than the baseline.
 
-Overlap: consecutive decisions share most of their outcome window (a taker decision every ~5.3 s against a 60 s horizon shares it with about 11 neighbours; the maker scores one decision per changed book, about one every 1-2 s). Sample counts below are decisions, not independent samples; the "windows" column (scored time span / horizon) is a rough count of non-overlapping outcome windows. Longer horizons overlap more.
+Overlap: consecutive decisions share most of their outcome window. In R3 a scored taker decision came every 5.3 s (median), so about 11 decisions fall inside one 60 s window; R6 scored a maker decision every 1.0 s (median; 2.2 s mean, since it scores only changed books). Sample counts below are decisions, not independent samples; the "windows" column (scored time span / horizon) is a rough count of non-overlapping outcome windows. Longer horizons overlap more.
 
 The interval is a moving-block bootstrap (2000 resamples, seed 20261014) of the
 per-decision Brier minus baseline, with blocks one horizon long in decisions (horizon /
@@ -42,15 +42,15 @@ book stop; R5 lasted 14 minutes), for completeness:
 | R2 | 300 s | 1283 | 24 | 58 (22) | 0.431 | 0.645 | 0.2886 | 0.2294 | +0.0592 | [-0.0588, +0.1494] | no difference shown |
 | R5 | 300 s | 225 | 2 | 225 (1) | 0.624 | 1.000 | 0.1925 | 0.0011 | +0.1913 | [+0.1913, +0.1913] | too few samples |
 
-Read plainly: the model was better than the baseline in: none. Worse in: none (calibration set) and none (other runs). Too few samples to read: R5 30 s, R5 60 s, R6 300 s, R5 300 s. Everywhere else: no difference shown. With these sample sizes (a few hundred non-overlapping windows at
-most) a small real edge could not be seen either way; PROBLEM.md expected a few thousand
+Read plainly: the model was better than the baseline in: none. Worse in: none (calibration set) and none (other runs). Too few samples to read: R5 30 s, R5 60 s, R6 300 s, R5 300 s. Everywhere else: no difference shown. With these sample sizes (at most 356 non-overlapping windows in
+a row) a small real edge could not be seen either way; PROBLEM.md expected a few thousand
 decisions to be needed, and the extra run that would have added more (plan item E7) was not
 done.
 
 The model leaned down: pooled at 60 s its mean `p_up` was 0.378 while
 0.534 of the labels were up (per run in the table). On 2026-10-08, with a
-placeholder prompt, the decider had leaned up instead (PIPELINE.md); E6 tests whether
-recalibration removes the lean.
+placeholder prompt, the decider had leaned up (PIPELINE.md); E6 tests whether recalibration
+removes the lean.
 
 ## Reliability (10 equal bins; n = decisions in the bin)
 
