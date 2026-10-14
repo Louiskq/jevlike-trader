@@ -4,9 +4,9 @@
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
-- Current milestone: 9 (maker side changes), issue #18, branch fix/m9-side-change
+- Current milestone: 9 merged (v0.9); M8 live acceptance met; step 6 evidence next
 - Next action: M9 build, PR, review; then rerun the 1 h live maker run on the VM; then step 6 evidence and step 7 README
-- Waiting on: user merge of PR #19
+- Waiting on: user merge of the M9 records PR
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -18,8 +18,8 @@
 | 5 | Decider backend and soak | #5 | PR #11 | merged, v0.5; soak pending |
 | 6 | Flatten retry after network loss | #12 | PR #13 | merged, v0.6; live check pending |
 | 7 | Recover from a stalled feed | #14 | PR #15 | merged, v0.7; live check pending |
-| 8 | Maker strategy | #16 | PR #17 | merged, v0.8; live maker run pending |
-| 9 | Maker side changes cancel and re-place | #18 | PR #19 | ready for merge |
+| 8 | Maker strategy | #16 | PR #17 | merged, v0.8; live acceptance met (after M9) |
+| 9 | Maker side changes cancel and re-place | #18 | PR #19 | merged, v0.9; live run passed |
 
 ## Notes for next build
 - User has no testnet account/API wallet yet; needed before M4 (walk them through, they do it).
@@ -121,3 +121,6 @@
 - 2026-10-11: M9 reviewer: first two attempts stalled (watchdog), second resumed and finished (.pipeline/m9-review.md): R1 should-fix (refused same-side modify retried forever), R2/R3 nits; B1-B9 all caught. At review gate.
 - 2026-10-11: review gate: user chose fix R1 and R2 (R3 documented as a limit). Builder resumed for the fixes.
 - 2026-10-11: R1 d0a1eb3, R2 8149333, R3 doc a1504ca, test 4277e2c; verified (884 tests, ruff clean). Decisions gate: user 'no reason'. DECISIONS.md, PR description, inline review written; records commit next.
+- 2026-10-12: PR #19 merged (b190f6a); main verified (884 tests, ruff clean); v0.9 released. VM pulled main (864 pass, 20 node-only skipped). VM clifton cert expired 05:22 UTC; new device code needed.
+- 2026-10-13: two VM device codes expired unapproved. User ran clifton auth on the Mac (cert bound to the Mac's key, cannot be copied to the VM). Orchestrator chose: GPU job 7388978 (2 h) from the Mac, model relayed Mac -> VM (ssh -L 18000 to node 10.242.22.77 + ssh -R 8000 to VM); bot still on the VM; Mac caffeinated 90 min (a Mac sleep only makes the bot hold). Live maker rerun started 22:23 UTC, 1 h, real model, $15 cap; Mac-side watcher cleans up at the end.
+- 2026-10-13: 1 h live maker run PASSED (maker_live2.db on VM; .pipeline/runs/m9-live-maker-1h.txt): full 3600 s, exit 0, kill none; 3507 decisions, 0 late, gap p50 1.00 s; model latency p50 159 ms p90 230 ms p99 264 ms (via Mac relay); 66 places, 136 modifies, 26 side-change cancels, 0 refused, 0 order errors, 12 post-only rejections, 66 action_cap; 37 fills (36 maker at 1.50 bps, 1 taker = shutdown flatten); reconcile OK (fees $0.062239, closedPnl -$0.0287 both; after fees -$0.0909); flat, 0 open orders; Brier 30/60/300 s 0.2505/0.2786/0.3055 vs baseline 0.2511/0.2508/0.2503; RSS 67.5->73.2 MB. GPU job cancelled, relay closed, caffeinate stopped.

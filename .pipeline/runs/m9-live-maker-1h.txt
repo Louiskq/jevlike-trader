@@ -1,0 +1,28 @@
+# M8/M9 acceptance: 1-hour live testnet maker run (VM, real model), 2026-10-13 22:23-23:23 UTC
+
+LIVE testnet orders, BTC, STRATEGY=maker: max position $15, max daily loss $100
+decisions 3507  late holds 0  gap p50 1.00 s  p90 1.01 s
+model latency ms (n=3507): p50 159.141  p90 230.236  p99 264.147  max 661.952
+calibration 30 s: n=1228  brier 0.2505  baseline(running) 0.2511
+calibration 60 s: n=1600  brier 0.2786  baseline(running) 0.2508
+calibration 300 s: n=2217  brier 0.3055  baseline(running) 0.2503
+events {'run_start': 1, 'strategy': 1, 'rss': 62, 'trades_connect': 6, 'address_budget': 60, 'skip': 93, 'maker_latency': 60, 'quote_place': 66, 'quote_cancel': 27, 'quote_skipped': 3, 'quote_vanished': 6, 'quote_modify': 136, 'quote_gone': 10, 'trades_disconnect': 5, 'quote_rejected': 12, 'action_cap': 66}  fills 37  fees $0.0622
+soak: rss start 67528 kB  end 73244 kB  max 73244 kB  (62 samples)
+soak: decisions 3507  hold rate 0.0%  late-hold rate 0.0%
+stale pauses 0  resumes 0
+stopped=True kill=None
+maker rest ms (n=3600): p50 227.1  p90 231.6  max 443.4
+maker action ms (n=224): p50 633.1  p90 697.0  max 1082.4
+maker loop ms (n=227): p50 199.7  p90 469.7  max 1422.9
+exchange position 0.0 BTC (should be 0)
+open orders on BTC: 0 (should be 0)
+exit 0
+fills 37 local, 37 on the exchange
+fees local $0.062239  exchange $0.062239
+position local 0.0  exchange 0.0
+realized P&L before fees: ledger $-0.0287  exchange closedPnl $-0.0287
+P&L at mid 82926.5: local before fees $-0.0287 after fees $-0.0909
+maker fills 36: fees $0.056266 (1.50 bps of notional)
+taker fills 1: fees $0.005973 (4.50 bps of notional)
+open orders on BTC: 0 (should be 0 after a run)
+OK: local and exchange agree

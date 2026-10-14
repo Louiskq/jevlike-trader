@@ -1,0 +1,10 @@
+{
+ "commit_id": "3533be6cc9f126723a489503fd3ecca8022ac7ec",
+ "event": "COMMENT",
+ "body": "Review trail for M9: the live run's failure (found from its events and a testnet probe) and reviewer findings R1-R2; R3 left as a documented limit. No user catches at this gate; the user chose to fix R1 and R2.",
+ "comments": [
+  {"path": "src/jevhl/maker.py", "line": 331, "side": "RIGHT", "body": "Caught (live testnet run): a side change was sent as a modify, which Hyperliquid refuses ('Attempted to modify to invalid new order'); three in a row killed the 2026-10-11 run. Now a cancel plus a place, needing room for two actions. Fixed in f862024."},
+  {"path": "src/jevhl/maker.py", "line": 416, "side": "RIGHT", "body": "Caught (reviewer, R1): a refused modify kept the old quote and the same modify was resent at every decision, forever. Now the quote is marked not modifiable and its next re-quote is a cancel and a place. Fixed in d0a1eb3."},
+  {"path": "src/jevhl/maker.py", "line": 384, "side": "RIGHT", "body": "Caught (reviewer, R2): a successful side-change cancel did not reset the consecutive order-error count. Fixed in 8149333."}
+ ]
+}
