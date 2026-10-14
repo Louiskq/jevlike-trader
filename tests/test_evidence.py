@@ -37,6 +37,13 @@ def test_block_len_is_the_horizon_in_decisions():
     assert ev.block_len(ts, 7) == 2  # rounded up: a block must cover the whole horizon
 
 
+def test_block_len_uses_the_median_gap_not_the_mean():
+    # Six 1 s gaps and one 24 s gap: median 1 s (block 4 for a 4 s horizon), mean 30/7 s
+    # (which would give a block of 1).
+    ts = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 30.0]
+    assert ev.block_len(ts, 4) == 4
+
+
 def test_block_len_is_at_least_one_and_at_most_n():
     assert ev.block_len([0.0], 60) == 1
     assert ev.block_len([0.0, 1.0, 2.0], 300) == 3
