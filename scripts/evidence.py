@@ -152,18 +152,19 @@ def momentum_probs(signs: Sequence[int], k: float) -> list[float]:
 
 
 def isotonic_fit(ps: Sequence[float], ys: Sequence[int]) -> list[tuple[float, float]]:
-    """Pool-adjacent-violators fit of y on p. Returns (lowest p of the block, block value) in
-    increasing p; equal p values always share one block."""
-    pts = sorted(zip(ps, ys, strict=True))
+    """Least-squares isotonic fit of y on p (pool adjacent violators). Points with the same p
+    are pooled first, weighted by count, so ties always share one value. Returns maximal
+    blocks as (lowest p of the block, block value) in increasing p."""
+    by_p: dict[float, list[float]] = {}  # p -> [sum y, count]
+    for p, y in zip(ps, ys, strict=True):
+        acc = by_p.setdefault(p, [0.0, 0])
+        acc[0] += y
+        acc[1] += 1
     blocks: list[list[float]] = []  # [start p, sum y, count]
-    for p, y in pts:
-        if blocks and blocks[-1][0] == p:
-            blocks[-1][1] += y
-            blocks[-1][2] += 1
-        else:
-            blocks.append([p, float(y), 1])
+    for p in sorted(by_p):
+        blocks.append([p, *by_p[p]])
         while len(blocks) > 1 and blocks[-2][1] / blocks[-2][2] >= blocks[-1][1] / blocks[-1][2]:
-            start, s, c = blocks.pop()
+            _, s, c = blocks.pop()
             blocks[-1][1] += s
             blocks[-1][2] += c
     return [(b[0], b[1] / b[2]) for b in blocks]

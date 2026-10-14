@@ -162,6 +162,24 @@ def test_isotonic_predict_is_a_step_function_between_and_beyond_fitted_points():
     )
 
 
+def test_isotonic_pools_tied_probabilities_before_pooling_violators():
+    # The least-squares isotonic fit of (0.1: 1), (0.2: 0, 1) is 2/3 everywhere: the two
+    # points at 0.2 (mean 0.5) violate 0.1's 1 and pool with it.
+    model = ev.isotonic_fit([0.1, 0.2, 0.2], [1, 0, 1])
+    assert ev.isotonic_predict(model, [0.1, 0.2]) == pytest.approx([2 / 3, 2 / 3])
+
+
+def test_isotonic_ties_after_an_earlier_block_pool_with_each_other():
+    # Distinct p: 0.1 -> 0, 0.2 -> 1, 0.3 -> 1/3 (three tied points). 0.2 and 0.3 violate and
+    # pool to (1 + 1) / 4 = 0.5; 0.1 stays at 0.
+    model = ev.isotonic_fit([0.1, 0.2, 0.3, 0.3, 0.3], [0, 1, 0, 0, 1])
+    assert model == [(0.1, 0.0), (0.2, pytest.approx(0.5))]
+
+
+def test_isotonic_blocks_are_maximal_equal_neighbours_merge():
+    assert ev.isotonic_fit([0.1, 0.2], [1, 1]) == [(0.1, 1.0)]
+
+
 def test_isotonic_ties_in_probability_share_one_value():
     model = ev.isotonic_fit([0.5, 0.5, 0.5, 0.5], [1, 0, 0, 0])
     assert ev.isotonic_predict(model, [0.5]) == pytest.approx([0.25])
