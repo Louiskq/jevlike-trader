@@ -7,6 +7,8 @@ import pytest
 
 import evidence as ev
 from jevhl.calibration import baseline_brier_running, brier
+from jevhl.store import Store
+from jevhl.types import Action, Decision
 
 # ---- running baseline and per-decision differences ----
 
@@ -273,3 +275,34 @@ def test_chance_note_counts_too_few_samples_as_tests_but_not_as_exclusions():
     note = ev.chance_note(["too few samples"] * 3 + ["worse than baseline"]
                           + ["no difference shown"] * 14)
     assert "1 of 18 intervals" in note and "3 too few samples to read" in note
+
+
+# ---- prose computed from the data, not written in ----
+
+
+def _run_store(rss_kb: list[int], kinds: list[str]) -> Store:
+    """A small run: a run_start, decisions every 5 s, one rss sample a minute, extra events."""
+    st = Store()
+    st.log_event(0.0, "run_start", "0")
+    for i in range(40):
+        st.insert_decision(Decision(5.0 * i, 0.5, Action.HOLD, "below_gate", 0.0, 0.6, 1.0),
+                           100.0)
+    for i, kb in enumerate(rss_kb):
+        st.log_event(60.0 * i, "rss", str(kb))
+    for kind in kinds:
+        st.log_event(30.0, kind, "planted")
+    return st
+
+
+def test_unattended_headline_counts_error_events(tmp_path):
+    st = _run_store([1000, 1100, 1200, 1300, 1400, 1500], ["order_error"])
+    _, head = ev.e4_unattended({"R3": st, "R6": st}, tmp_path)
+    assert "0 error" not in head
+    assert "1 error" in head
+
+
+def test_unattended_headline_does_not_claim_growth_for_flat_memory(tmp_path):
+    st = _run_store([1000] * 8, [])
+    md, head = ev.e4_unattended({"R3": st, "R6": st}, tmp_path)
+    assert "not levelled off" not in head
+    assert "still rising" not in md
