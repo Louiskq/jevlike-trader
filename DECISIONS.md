@@ -187,3 +187,26 @@ Decided by the builder, not chosen either way by the user: after a side-change c
 > **M9 / PR #19: a refused modify would have been resent at every decision, forever.** Caught by: reviewer (R1). Fix: d0a1eb3. Prevention: the R1 tests in tests/test_maker.py, including `test_a_refused_quote_stays_unmodifiable_after_the_open_orders_check`.
 
 > **M9 / PR #19: a successful side-change cancel did not reset the order-error count.** Caught by: reviewer (R2). Fix: 8149333.
+
+## Step 6 / PR #22: decisions
+
+Made at the evidence and review gates (2026-10-14). The user gave no rationale ("no reason").
+
+- **Evidence plan approved as written** (.pipeline/evidence-plan.md): everything computed offline from the bot's own logs, with block-bootstrap intervals, three baselines and three ablations. Rationale (user): none given.
+- **No extra real-model run.** The results say the sample (at most 356 non-overlapping windows per horizon) is too small to claim skill or its absence. Alternatives: a 3 h taker or maker run (~3 GPU-hours). Rationale (user): none given.
+- **A complete copy of drill.db** after the orchestrator's first copy missed its write-ahead log. Rationale (user): none given.
+- **Fix all four review findings (R1-R4).** Rationale (user): none given.
+
+Decided by the builder, not chosen either way by the user: E5 also tabulates R2 and R5 (the other real-model runs, not pooled) so nothing looks cherry-picked; an interval from fewer than 10 bootstrap blocks reads "too few samples"; block length is the horizon divided by the median gap between scored decisions.
+
+## Step 6 / PR #22: caught mistakes
+
+> **Step 6: drill.db copied without its write-ahead log.** Caught by: builder. What: the copy held 12 of 102 decisions, so the loss-limit drill read as "log only". Fix: a full sqlite backup and regenerated results (PR commit "Results: loss-limit drill read from the complete drill database").
+
+> **Step 6 / PR #22: isotonic recalibration did not pool tied probabilities.** Caught by: reviewer (R1). What: not the least-squares fit; A2 numbers off by up to 0.006, no verdict changed. Fix: 77200b2.
+
+> **Step 6 / PR #22: the momentum cell was reported without a chance caveat.** Caught by: reviewer (R2). Fix: 14fbf7e.
+
+> **Step 6 / PR #22: prose claims were hard-coded, three isotonic/block-length bugs passed every test.** Caught by: reviewer (R3, B1, B3, B6). Fix: 3797a0c, 7de538a, 77200b2; R4 f5deaf3.
+
+> **The 2026-10-10 log called the 2 h memory curve "flattening".** Caught by: builder, from the data (+0.45 MB an hour, not levelled off). Fix: results/unattended.md states the measured rise.
