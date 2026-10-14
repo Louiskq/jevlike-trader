@@ -13,6 +13,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "matplotlib>=3.11.2",
     "pytest>=8",
     "ruff>=0.6",
 ]
@@ -26,11 +27,11 @@ packages = ["src/jevhl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "scripts"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
