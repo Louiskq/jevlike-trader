@@ -1,0 +1,9 @@
+{
+ "commit_id": "88a981e0e82a1a3b0a87a2b72262d46542eaff22",
+ "event": "COMMENT",
+ "body": "Review trail for step 6: reviewer findings R1-R4 and three surviving break-it mutants, all fixed; one builder catch (incomplete drill.db copy). No user catches at this gate; the user chose to fix all four.",
+ "comments": [
+  {"path": "scripts/evidence.py", "line": 152, "side": "RIGHT", "body": "Caught (reviewer, R1): tied probabilities were not pooled, so this was not the least-squares isotonic fit; A2 numbers were off by up to 0.006 (no verdict changed). Fixed in 77200b2."},
+  {"path": "scripts/evidence.py", "line": 226, "side": "RIGHT", "body": "Caught (reviewer, R2): the momentum cell was reported as beating the base rate with no chance caveat (2 of 18 intervals exclude zero, ~0.9 expected). Fixed in 14fbf7e."}
+ ]
+}
