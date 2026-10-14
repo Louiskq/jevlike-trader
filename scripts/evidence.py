@@ -19,6 +19,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from jevhl import policy
 from jevhl.calibration import baseline_brier_running, brier, reliability_bins
 from jevhl.latency import latency_report, percentile
 from jevhl.ledger import Ledger
@@ -29,9 +30,6 @@ from jevhl.types import HORIZONS_S
 # ---------------------------------------------------------------------------------------------
 # Statistics (pure functions, tested in tests/test_evidence.py)
 # ---------------------------------------------------------------------------------------------
-
-GATE_EPS = 1e-12  # the same float tolerance as jevhl.policy.EPS
-
 
 def mean(xs: Sequence[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
@@ -249,9 +247,9 @@ def gate_sweep(ps: Sequence[float], ys: Sequence[int], gates: Sequence[float]) -
     for g in gates:
         sel = []
         for p, y in zip(ps, ys, strict=True):
-            if p >= g - GATE_EPS:
+            if p >= g - policy.EPS:  # the bot's own gate rule and tolerance
                 sel.append((p, y, 1))
-            elif 1.0 - p >= g - GATE_EPS:
+            elif 1.0 - p >= g - policy.EPS:
                 sel.append((p, y, 0))
         n = len(sel)
         rows.append({

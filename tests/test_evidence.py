@@ -6,7 +6,9 @@ import random
 import pytest
 
 import evidence as ev
+from jevhl import policy
 from jevhl.calibration import baseline_brier_running, brier
+from jevhl.config import Config
 from jevhl.store import Store
 from jevhl.types import Action, Decision
 
@@ -224,6 +226,19 @@ def test_gate_sweep_counts_brier_and_hit_rate_of_would_be_trades():
 def test_gate_sweep_with_no_trades():
     (r,) = ev.gate_sweep([0.5, 0.52], [1, 0], [0.70])
     assert r["n"] == 0 and r["brier"] is None and r["hit_rate"] is None
+
+
+def test_gate_sweep_trades_exactly_what_the_policy_would(monkeypatch):
+    # The sweep must use the bot's own tolerance, not a copy: with a (deliberately coarse)
+    # tolerance patched into the policy, both still agree on which decisions trade.
+    monkeypatch.setattr(policy, "EPS", 0.05)
+    ps = [0.56, 0.54, 0.44, 0.46, 0.60, 0.30, 0.50]
+    for gate in (0.60, 0.65):
+        traded = [p for p in ps
+                  if policy.decide(p, 0.0, Config(gate=gate), ts=0.0, latency_ms=1.0).action
+                  is not Action.HOLD]
+        (r,) = ev.gate_sweep(ps, [1] * len(ps), [gate])
+        assert r["n"] == len(traded)
 
 
 def test_gate_boundary_is_inclusive_for_non_float_exact_values():
