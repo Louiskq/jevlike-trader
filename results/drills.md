@@ -6,7 +6,7 @@ What was done, what the bot did, and where the evidence is. "DB" means the run's
 
 | Drill | What was done | What the bot did | Evidence |
 |---|---|---|---|
-| Loss-limit kill | Live testnet, mock model, `MAX_DAILY_LOSS_USD=0.02` | Kill `daily_loss`, cancelled and flattened, stopped; reconcile OK (9 fills, fees $0.043794, closedPnl $0.0214 both sides) | **Log only** (PIPELINE.md 2026-10-09). This session is not in `runs/drill.db`, which holds only the first session |
+| Loss-limit kill | Live testnet, mock model, `MAX_DAILY_LOSS_USD=0.02` | Kill `daily_loss`, cancelled and flattened, stopped; reconcile OK (9 fills, fees $0.043794, closedPnl $0.0214 both sides) | DB (drill.db): `kill_switch daily_loss` at 2026-10-08 23:07:29 UTC, 1 closing fill(s) after it, end position 0 |
 | Network loss (accidental, before M6) | DNS failed about 2 min into the first loss-limit drill attempt (not planned) | No decision after the last book (2026-10-08 19:24:51 UTC); stale-book kill at 2026-10-08 19:25:49 UTC; 0 fills after the last book; 2 flatten attempts failed (DNS), leaving -0.00017 BTC open; the bot reported the position as unknown | DB (drill.db); the hand close in the UI is from the log |
 | Flatten retry after the network returns (M6) | **Not drilled live** | Covered by tests only (e.g. `test_seconds_does_not_cut_a_flatten_retry_short`); the milestone table still says "live check pending" | Tests; PIPELINE.md |
 | Stale feed pause and resume (M7) | **Not drilled live** | The incident behind it: R2 stopped on `kill_switch stale_book` at 2026-10-09 16:18:04 UTC (last decision 2026-10-09 16:17:49 UTC), before M7. After M7, stale pauses logged: R3 0, R5 0, R6 0, so the pause/resume path never ran live | DB (soak.db, overnight.db, maker_live*.db); tests |

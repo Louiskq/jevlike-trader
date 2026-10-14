@@ -16,14 +16,11 @@ position; `not recorded` where the record does not give that figure).
 | R3 unattended run | 114 | $0.550461 | -$0.0478 | 0 | yes / yes / yes / yes | not recorded | PIPELINE.md log, 2026-10-10 |
 | R5 maker live run, killed by the M9 bug | 6 | $0.009694 | -$0.0101 | 0 | yes / yes / yes / yes | 0 | PIPELINE.md log, 2026-10-11 |
 | R6 maker live run | 37 | $0.062239 | -$0.0287 | 0 | yes / yes / yes / yes | 0 | .pipeline/runs/m9-live-maker-1h.txt (saved output) |
-| Loss-limit drill | not in runs/drill.db | $0.043794* | $0.0214* | 0* | log only | not recorded | PIPELINE.md log, 2026-10-09 |
+| Loss-limit drill (drill.db, whole file) | 9 | $0.043794 | $0.0214 | 0 | yes / yes / yes / yes | not recorded | PIPELINE.md log, 2026-10-09 |
 | Network-loss drill (drill.db, before the kill) | 2 | $0.006316 | $0.0000 | -0.00017 | not reconciled | n/a | flatten failed with DNS down; the short was closed by hand in the UI (log) |
 
 Every recorded reconcile said `OK: local and exchange agree`. Taker runs use IOC orders only,
 so nothing rests on the book; their open-order count was not written down.
-
-\* The loss-limit drill's rows are not in `runs/drill.db`: that copy holds only the first
-(network-loss) session. The starred figures are the PIPELINE.md log's, not recomputed.
 
 The network-loss drill (2026-10-08, before M6) is the one run that did not end flat: the
 stale-book kill fired but both flatten attempts failed while DNS was down, leaving the short
