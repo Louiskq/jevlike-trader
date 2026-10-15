@@ -1,12 +1,12 @@
 # PIPELINE
 
-- Phase: 4-5 (Milestone loop)
+- Phase: 6 (Evidence)
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
 - Current milestone: 9 merged (v0.9); M8 live acceptance met; step 6 evidence next
 - Next action: M9 build, PR, review; then rerun the 1 h live maker run on the VM; then step 6 evidence and step 7 README
-- Waiting on: user merge of the M9 records PR
+- Waiting on: user merge of PR #20 then PR #22
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -122,5 +122,11 @@
 - 2026-10-11: review gate: user chose fix R1 and R2 (R3 documented as a limit). Builder resumed for the fixes.
 - 2026-10-11: R1 d0a1eb3, R2 8149333, R3 doc a1504ca, test 4277e2c; verified (884 tests, ruff clean). Decisions gate: user 'no reason'. DECISIONS.md, PR description, inline review written; records commit next.
 - 2026-10-12: PR #19 merged (b190f6a); main verified (884 tests, ruff clean); v0.9 released. VM pulled main (864 pass, 20 node-only skipped). VM clifton cert expired 05:22 UTC; new device code needed.
-- 2026-10-13: two VM device codes expired unapproved. User ran clifton auth on the Mac (cert bound to the Mac's key, cannot be copied to the VM). Orchestrator chose: GPU job 7388978 (2 h) from the Mac, model relayed Mac -> VM (ssh -L 18000 to node 10.242.22.77 + ssh -R 8000 to VM); bot still on the VM; Mac caffeinated 90 min (a Mac sleep only makes the bot hold). Live maker rerun started 22:23 UTC, 1 h, real model, $15 cap; Mac-side watcher cleans up at the end.
+- 2026-10-13: two VM device codes expired unapproved. User ran clifton auth on the Mac (cert bound to the Mac's key, cannot be copied to the VM). Orchestrator chose: GPU job 7388978 (2 h) from the Mac, model relayed Mac -> VM (ssh -L to the GPU node + ssh -R to the VM); bot still on the VM; Mac caffeinated 90 min (a Mac sleep only makes the bot hold). Live maker rerun started 22:23 UTC, 1 h, real model, $15 cap; Mac-side watcher cleans up at the end.
 - 2026-10-13: 1 h live maker run PASSED (maker_live2.db on VM; .pipeline/runs/m9-live-maker-1h.txt): full 3600 s, exit 0, kill none; 3507 decisions, 0 late, gap p50 1.00 s; model latency p50 159 ms p90 230 ms p99 264 ms (via Mac relay); 66 places, 136 modifies, 26 side-change cancels, 0 refused, 0 order errors, 12 post-only rejections, 66 action_cap; 37 fills (36 maker at 1.50 bps, 1 taker = shutdown flatten); reconcile OK (fees $0.062239, closedPnl -$0.0287 both; after fees -$0.0909); flat, 0 open orders; Brier 30/60/300 s 0.2505/0.2786/0.3055 vs baseline 0.2511/0.2508/0.2503; RSS 67.5->73.2 MB. GPU job cancelled, relay closed, caffeinate stopped.
+- 2026-10-14: step 6 started; evidence plan drafted (.pipeline/evidence-plan.md). At the evidence/compute gate.
+- 2026-10-14: evidence gate: user approved the plan as written and chose no extra GPU run. Run DBs copied to runs/ (gitignored); compute record from sacct (.pipeline/compute-raw.md). Issue #21, branch evidence/step6 (stacked on chore/m9-records); builder launched.
+- 2026-10-14: evidence built (233fdcd script+tests, dd10c0f results; 914 tests). Orchestrator's mistake: drill.db copied without its WAL (12/102 decisions); user approved a sqlite backup, results regenerated (loss-limit drill now from DB). Headline: reconcile OK all live runs; no skill shown (pooled 60 s Brier 0.2765 vs 0.2494, CI crosses 0); R6 AUC 0.686 at 30 s (one run, a lead not an edge); -$1.5856 after fees over 319 fills; 8.13 GPU-hours. Draft PR #22; reviewer started.
+- 2026-10-14: evidence reviewer (.pipeline/evidence-review.md): R1 must-fix (isotonic ties not pooled; A2 numbers off by up to 0.006, verdicts unchanged), R2 should-fix (momentum headline overstated), R3/R4 nits; B1/B3/B6 survive. At review gate.
+- 2026-10-14: evidence review gate: user chose fix all four. Builder resumed.
+- 2026-10-14: evidence fixes 77200b2, 14fbf7e, 3797a0c, f5deaf3, 7de538a, results 28e63b8; verified (925 tests, ruff clean, byte-identical regeneration). Decisions gate: user 'no reason'. Records commit next.
