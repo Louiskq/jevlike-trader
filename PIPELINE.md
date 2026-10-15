@@ -1,12 +1,12 @@
 # PIPELINE
 
-- Phase: 6 (Evidence)
+- Phase: 7 (README)
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
 - Current milestone: 9 merged (v0.9); M8 live acceptance met; step 6 evidence next
 - Next action: M9 build, PR, review; then rerun the 1 h live maker run on the VM; then step 6 evidence and step 7 README
-- Waiting on: user merge of PR #20 then PR #22
+- Waiting on: user merge of PR #22; user's README judgement sections (key decisions, limitations, next steps)
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -130,3 +130,5 @@
 - 2026-10-14: evidence reviewer (.pipeline/evidence-review.md): R1 must-fix (isotonic ties not pooled; A2 numbers off by up to 0.006, verdicts unchanged), R2 should-fix (momentum headline overstated), R3/R4 nits; B1/B3/B6 survive. At review gate.
 - 2026-10-14: evidence review gate: user chose fix all four. Builder resumed.
 - 2026-10-14: evidence fixes 77200b2, 14fbf7e, 3797a0c, f5deaf3, 7de538a, results 28e63b8; verified (925 tests, ruff clean, byte-identical regeneration). Decisions gate: user 'no reason'. Records commit next.
+- 2026-10-15: PR #20 merged. PR #22 ready (CI green), waiting for merge. Step 7: README mechanical sections drafted on docs/readme (stacked on evidence/step6). At README judgement gate.
+- 2026-10-15: USER OVERRIDE of the ownership rule: asked the assistant to write the README judgement sections ("do the facts yourself"). Drafted from DECISIONS.md, results/ and PIPELINE.md, labelled as an assistant draft in the README, with the user's own words quoted where they exist; user invited to edit.
