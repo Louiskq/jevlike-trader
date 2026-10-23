@@ -1,16 +1,20 @@
 """Out-of-sample evaluation shared by the feasibility study scripts (.pipeline/feasibility-plan.md).
 
 A forecast series is evaluated on a time-ordered split: fit on the first part, skip one
-horizon so no outcome window crosses the split, score the rest. Intervals reuse the moving-
-block bootstrap from scripts/evidence.py so the numbers read the same way as results/.
+horizon so no outcome window crosses the split, score the rest. Intervals are a moving-block
+bootstrap (blocks one horizon long, 2000 resamples, seed 20261014), the same method as
+scripts/evidence.py, written with numpy because the book data run to ~10^5 decisions.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from evidence import auc_of_pairs, block_bootstrap, mean, running_baseline_probs, verdict
+import numpy as np
+
+from evidence import MIN_BLOCKS, verdict
 
 N_BOOT = 2000
 SEED = 20261014
@@ -43,6 +47,51 @@ def signed_moves(ps: Sequence[float], moves_bps: Sequence[float], threshold: flo
             if abs(p - 0.5) >= threshold and p != 0.5]
 
 
+def running_base(ys: np.ndarray) -> np.ndarray:
+    """At each step the share of earlier labels that were up (0.5 first), as in evidence.py."""
+    prior = np.concatenate([[0.0], np.cumsum(ys)[:-1]])
+    count = np.arange(len(ys))
+    return np.where(count > 0, prior / np.maximum(count, 1), 0.5)
+
+
+def auc_np(ps: np.ndarray, ys: np.ndarray) -> float | None:
+    """Mann-Whitney AUC with ties counted half; None with one class only."""
+    n1 = int(ys.sum())
+    n0 = len(ys) - n1
+    if n1 == 0 or n0 == 0:
+        return None
+    order = np.argsort(ps, kind="mergesort")
+    sp = ps[order]
+    ranks = np.empty(len(ps))
+    # average ranks over ties
+    _, first, counts = np.unique(sp, return_index=True, return_counts=True)
+    avg = first + (counts - 1) / 2 + 1
+    ranks[order] = np.repeat(avg, counts)
+    return float((ranks[ys == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+def block_indices(n: int, length: int, rng: np.random.Generator) -> np.ndarray:
+    """One moving-block resample of range(n): blocks of `length` consecutive indices with
+    uniform random starts, concatenated and cut to n."""
+    length = max(1, min(length, n))
+    k = math.ceil(n / length)
+    starts = rng.integers(0, n - length + 1, size=k)
+    return (starts[:, None] + np.arange(length)).ravel()[:n]
+
+
+def bootstrap(stat: Callable[[np.ndarray], float | None], n: int, length: int
+              ) -> tuple[float | None, float | None]:
+    """95% percentile interval of stat(indices) over block resamples."""
+    if n < 2:
+        return None, None
+    rng = np.random.default_rng(SEED)
+    vals = [v for v in (stat(block_indices(n, length, rng)) for _ in range(N_BOOT))
+            if v is not None]
+    if not vals:
+        return None, None
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
 @dataclass
 class Result:
     n_test: int
@@ -61,13 +110,15 @@ class Result:
     edge_mean: float | None
     edge_lo: float | None
     edge_hi: float | None
+    block: int = 1
 
     def edge_verdict(self) -> str:
         """The plan's two criteria, read together."""
+        if self.n_blocks < MIN_BLOCKS or self.n_confident < MIN_BLOCKS * min(
+                self.block, max(self.n_confident, 1)):
+            return "too few samples"
         learnable = (self.auc_lo is not None and self.auc_lo > 0.5
                      and self.brier_verdict == "better than baseline")
-        if self.n_blocks < 10:
-            return "too few samples"
         clears = [k for k, c in COSTS_BPS.items() if self.edge_lo is not None and self.edge_lo > c]
         if learnable and clears:
             return f"edge (clears {', '.join(clears)} cost)"
@@ -81,28 +132,27 @@ def evaluate(ps_test: Sequence[float], ys_all: Sequence[int], test: range,
     """Score test forecasts. ys_all is every label in time order (train and test), so the
     running base rate at a test point has seen all earlier labels, as a live baseline would.
     `block` is one horizon in points, the bootstrap block length."""
-    base = running_baseline_probs(ys_all)
-    ys = [ys_all[i] for i in test]
-    bs = [base[i] for i in test]
-    diffs = [(p - y) ** 2 - (b - y) ** 2 for p, y, b in zip(ps_test, ys, bs, strict=True)]
+    ys_all_a = np.asarray(ys_all, dtype=float)
+    base = running_base(ys_all_a)[test.start:test.stop]
+    ys = ys_all_a[test.start:test.stop]
+    ps = np.asarray(ps_test, dtype=float)
+    diffs = (ps - ys) ** 2 - (base - ys) ** 2
     n = len(ys)
-    n_blocks = n / block if block else 0
-    lo, hi = block_bootstrap(mean, [diffs], [block], N_BOOT, SEED)
-    pairs = list(zip(ps_test, ys, strict=True))
-    alo, ahi = block_bootstrap(auc_of_pairs, [pairs], [block], N_BOOT, SEED)
+    n_blocks = n / block if block else 0.0
+    lo, hi = bootstrap(lambda ix: float(diffs[ix].mean()), n, block)
+    alo, ahi = bootstrap(lambda ix: auc_np(ps[ix], ys[ix]), n, block)
+    edge = np.asarray(signed_moves(list(ps), list(moves_test), threshold))
     # Confident calls are a subset, so one horizon holds fewer of them than `block`; using the
     # full block length in calls makes their blocks longer than a horizon (wider, cautious).
-    edge = signed_moves(ps_test, moves_test, threshold)
-    elo = ehi = None
-    if len(edge) >= 2:
-        elo, ehi = block_bootstrap(mean, [edge], [max(1, min(block, len(edge)))], N_BOOT, SEED)
-    abs_moves = sorted(abs(m) for m in moves_test)
+    elo, ehi = bootstrap(lambda ix: float(edge[ix].mean()), len(edge), min(block, len(edge)))
+    abs_moves = np.abs(np.asarray(moves_test, dtype=float))
     return Result(
-        n_test=n, n_blocks=n_blocks, up_rate=mean(ys) or 0.0,
-        abs_move_mean=mean(abs_moves) or 0.0,
-        abs_move_median=abs_moves[len(abs_moves) // 2] if abs_moves else 0.0,
-        brier_diff=mean(diffs) or 0.0, brier_lo=lo, brier_hi=hi,
+        n_test=n, n_blocks=n_blocks, up_rate=float(ys.mean()) if n else 0.0,
+        abs_move_mean=float(abs_moves.mean()) if n else 0.0,
+        abs_move_median=float(np.median(abs_moves)) if n else 0.0,
+        brier_diff=float(diffs.mean()) if n else 0.0, brier_lo=lo, brier_hi=hi,
         brier_verdict=verdict(lo, hi, n_blocks),
-        auc=auc_of_pairs(pairs), auc_lo=alo, auc_hi=ahi,
-        n_confident=len(edge), edge_mean=mean(edge), edge_lo=elo, edge_hi=ehi,
+        auc=auc_np(ps, ys), auc_lo=alo, auc_hi=ahi,
+        n_confident=len(edge), edge_mean=float(edge.mean()) if len(edge) else None,
+        edge_lo=elo, edge_hi=ehi, block=block,
     )

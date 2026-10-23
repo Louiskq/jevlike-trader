@@ -73,3 +73,67 @@ def test_evaluate_finds_a_planted_edge_and_not_a_fake_one():
     noise = [rng.random() for _ in test]
     r2 = evaluate(noise, ys, test, [moves[i] for i in test], threshold=0.3, block=1)
     assert r2.edge_verdict() == "nothing found"
+
+
+def test_numpy_auc_and_base_rate_match_the_evidence_script():
+    import numpy as np
+    from evaluate import auc_np, running_base
+
+    from evidence import auc, running_baseline_probs
+    rng = random.Random(3)
+    ps = [round(rng.random(), 1) for _ in range(500)]  # rounded, so many ties
+    ys = [int(rng.random() < 0.3 + 0.4 * p) for p in ps]
+    assert auc_np(np.array(ps), np.array(ys)) == pytest.approx(auc(ps, ys))
+    assert list(running_base(np.array(ys, dtype=float))) == pytest.approx(
+        running_baseline_probs(ys))
+    assert auc_np(np.array([0.2, 0.8]), np.array([1, 1])) is None
+
+
+def test_block_indices_are_runs_of_consecutive_points():
+    import numpy as np
+    from evaluate import block_indices
+    ix = block_indices(103, 10, np.random.default_rng(0))
+    assert len(ix) == 103 and ix.min() >= 0 and ix.max() <= 102
+    assert all(ix[k + 1] == ix[k] + 1 for k in range(9))  # first block is consecutive
+
+
+def _venue(n=2000, seed=0):
+    import numpy as np
+    from books import Venue
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    mid = 80000 + np.cumsum(rng.normal(0, 2, n))
+    tr_t = np.sort(rng.uniform(0, n, 4 * n))
+    sz = rng.uniform(0.01, 1, len(tr_t))
+    return Venue(t=t, mid=mid, spread_bps=np.full(n, 0.12), imb=rng.uniform(-1, 1, (n, 3)),
+                 depth=rng.uniform(0, 3, (n, 6)), tr_t=tr_t,
+                 tr_signed=sz * rng.choice([-1, 1], len(sz)), tr_size=sz,
+                 hours=n / 3600, n_trades=len(sz), gaps=0)
+
+
+def test_book_features_never_see_the_future():
+    from books import build
+    v = _venue()
+    base = build(v, 60, stride=5, main=_venue(seed=1))
+    k = len(base["t"]) // 2
+    t_k = base["t"][k]
+    v2 = _venue()
+    after = v2.t > t_k
+    v2.mid[after] += 500  # every later book changes
+    v2.tr_signed[v2.tr_t > t_k] *= -1  # and every later trade
+    changed = build(v2, 60, stride=5, main=_venue(seed=1))
+    j = list(changed["t"]).index(t_k)
+    assert (changed["x"][j] == base["x"][k]).all()
+    assert changed["move"][j] != base["move"][k]
+
+
+def test_label_is_dropped_when_the_future_book_is_stale():
+    import numpy as np
+    from books import build
+    v = _venue()
+    keep = (v.t < 1000) | (v.t > 1100)  # a 100 s hole in the books
+    v.t, v.mid = v.t[keep], v.mid[keep]
+    v.spread_bps, v.imb, v.depth = v.spread_bps[keep], v.imb[keep], v.depth[keep]
+    d = build(v, 60, stride=1)
+    target = d["t"] + 60
+    assert not np.any((target > 1005) & (target <= 1100))

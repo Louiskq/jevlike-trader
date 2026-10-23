@@ -68,8 +68,21 @@ At a horizon, on one venue, a model **finds an edge** if both hold on the test s
 
 Part A found nothing at any horizon on either venue (`study/results/candles.md`). One added
 test for part B, because the collector records both venues side by side: **does mainnet lead
-testnet?** Testnet BTC tracks the mainnet price, so mainnet's recent returns (5/15/60 s) are
-added as features for testnet labels, as a separate model ("testnet + mainnet features"). If it
+testnet?** Testnet BTC tracks the mainnet price, so mainnet's recent returns (5/15/60 s) and
+the testnet-minus-mainnet price gap (bps) are added as features for testnet labels, as a separate model ("testnet + mainnet features"). If it
 passes, that is an edge on testnet that comes from testnet following mainnet, not from reading
 a real market: it would say nothing about trading mainnet, and the readout must say so. Same
-split, statistics and pass criteria as above.
+split, statistics and pass criteria as above. (The price gap was added to this amendment before
+any part B data had been analysed.)
+
+## Amendment 2 (2026-10-23, method check on synthetic data, before any real part B analysis)
+
+`study/books.py` was run on 6 h of synthetic books with a planted signal (testnet copies mainnet
+10 s late) and none elsewhere. The logistic model with mainnet features found it at 60 s
+(AUC 0.686, edge +3.28 bps [+2.71, +3.81]) and nothing was found where nothing was planted.
+Two fixes came out of it:
+- The boosted trees overfit noise (Brier up to +0.2 worse than the base rate), so they are now
+  regularised harder (depth 3, at least 200 points a leaf, 100 rounds); after that they found
+  the planted signal too (AUC 0.673) and stopped overfitting.
+- An edge reading now needs confident calls spanning at least 10 bootstrap blocks; with one or
+  two calls the interval collapsed to a single value.
