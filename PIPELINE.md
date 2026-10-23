@@ -1,12 +1,12 @@
 # PIPELINE
 
-- Phase: 6 (Evidence)
+- Phase: 7 (README)
 - Repo: https://github.com/Louiskq/jevlike-trader (private), main
 - Rough-spec commit: 71822c4
 - Final-spec commit: b279a4b
 - Current milestone: 9 merged (v0.9); M8 live acceptance met; step 6 evidence next
 - Next action: M9 build, PR, review; then rerun the 1 h live maker run on the VM; then step 6 evidence and step 7 README
-- Waiting on: user merge of PR #20 then PR #22
+- Waiting on: user editing the README themselves on branch docs/readme, then merging the README PR
 
 ## Milestones
 | # | Title | Issue | Branch/PR | Status |
@@ -130,3 +130,10 @@
 - 2026-10-14: evidence reviewer (.pipeline/evidence-review.md): R1 must-fix (isotonic ties not pooled; A2 numbers off by up to 0.006, verdicts unchanged), R2 should-fix (momentum headline overstated), R3/R4 nits; B1/B3/B6 survive. At review gate.
 - 2026-10-14: evidence review gate: user chose fix all four. Builder resumed.
 - 2026-10-14: evidence fixes 77200b2, 14fbf7e, 3797a0c, f5deaf3, 7de538a, results 28e63b8; verified (925 tests, ruff clean, byte-identical regeneration). Decisions gate: user 'no reason'. Records commit next.
+- 2026-10-15: PR #20 merged. PR #22 ready (CI green), waiting for merge. Step 7: README mechanical sections drafted on docs/readme (stacked on evidence/step6). At README judgement gate.
+- 2026-10-15: USER OVERRIDE of the ownership rule: asked the assistant to write the README judgement sections ("do the facts yourself"). Drafted from DECISIONS.md, results/ and PIPELINE.md, labelled as an assistant draft in the README, with the user's own words quoted where they exist; user invited to edit.
+- 2026-10-15: PR #22 (evidence) merged. README draft pushed (docs/readme), draft PR opened. User: "i will then edit the readme myself".
+- 2026-10-23: user asked to compare the maker with jarrodwatts/jev-trader, analyse whether either can actually trade, and test-run it. Analysis in .pipeline/maker-vs-jarrod.md (Jarrod's public dry-run deployment returned 404, so his side uses his code and a live Monad gas-price read). Verdict: ours trades but captures ~0.14 bps spread against a 1.50 bps maker fee; Jarrod's re-places every block and pays ~$9.70/h gas against ~$0.0014 per fill.
+- 2026-10-23: user chose a 1 h live maker run with the real model. GPU job 7666824 (1 GH200, 1 h 40 min limit) from the Mac, relayed Mac -> VM as on 10-13; maker_live3.db on the VM from 17:34 UTC; Mac-side watcher cleans up at the end.
+- 2026-10-23: R7 live maker run PASSED (maker_live3.db, copied to runs/; .pipeline/runs/maker-live-r7-1h.txt): 3600 s, exit 0, kill none; 3201 decisions, 52 late (1.6%); 95 places, 316 modifies, 37 cancels, 0 order errors; 57 fills (55 maker); reconcile OK (fees $0.088759, closedPnl -$0.0151; after fees -$0.1038); flat, 0 orders. 30 s AUC 0.601 [0.508, 0.698], R6+R7 0.630 [0.558, 0.702]; Brier not better than baseline at any horizon. GPU job 7666824 01:03:46, cancelled at end; relay closed. results/ not regenerated (R7 is not in the evidence set).
+- 2026-10-23: user asked about fine-tuning; assistant showed that at 30-60 s even perfect foresight does not clear costs (mean |move| 1.2-2.2 bps at 60 s vs maker 1.35 / taker 9 bps), 300 s+ could. User: "ok do this" (feasibility check first); data source: "Both, compare". Plan with fixed pass criteria in .pipeline/feasibility-plan.md (written before results). Collector running on the VM (tmux `collect`) from 20:09 UTC: mainnet + testnet BTC books ~1/s and all trades, read-only. Part A (candles, price only): nothing found at 1-240 min on either venue (study/results/candles.md). Amendment 1 (before any part B analysis): test whether mainnet leads testnet.
