@@ -1,0 +1,155 @@
+"""Feasibility study part A: price-only predictability of BTC from Hyperliquid candles, mainnet
+and testnet (.pipeline/feasibility-plan.md). Read-only public data, no key.
+
+    uv run --group study python study/candles.py --cache data/candles --out study/results
+
+Fetches the most candles each interval returns (cached, so a rerun on the cache gives the
+same numbers), builds past-return features and future-move labels, fits a logistic regression
+on the first 60% and scores the rest.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from evaluate import COSTS_BPS, confident_threshold, evaluate, split_with_gap  # noqa: E402
+
+INFO = {"mainnet": "https://api.hyperliquid.xyz/info",
+        "testnet": "https://api.hyperliquid-testnet.xyz/info"}
+INTERVAL_S = {"1m": 60, "5m": 300, "15m": 900}
+# (horizon in minutes, candle interval it is measured on)
+HORIZONS = [(1, "1m"), (5, "1m"), (15, "1m"), (60, "5m"), (240, "15m")]
+LAGS = (1, 5, 15, 60)
+VOL_BARS = 60
+MAX_CANDLES = 5000
+
+
+def fetch_candles(venue: str, interval: str, coin: str = "BTC") -> list[dict]:
+    end = int(time.time() * 1000)
+    start = end - MAX_CANDLES * INTERVAL_S[interval] * 1000
+    body = {"type": "candleSnapshot",
+            "req": {"coin": coin, "interval": interval, "startTime": start, "endTime": end}}
+    req = urllib.request.Request(INFO[venue], data=json.dumps(body).encode(),
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (fixed URL)
+        return json.loads(resp.read())
+
+
+def load(cache: Path, venue: str, interval: str, refresh: bool) -> tuple[list[float], list[float]]:
+    path = cache / f"{venue}_BTC_{interval}.json"
+    if refresh or not path.exists():
+        cache.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(fetch_candles(venue, interval)))
+    rows = sorted(json.loads(path.read_text()), key=lambda c: c["t"])
+    return [c["T"] / 1000 for c in rows], [float(c["c"]) for c in rows]
+
+
+def features_and_labels(ts: list[float], closes: list[float], horizon_bars: int,
+                        lags: tuple[int, ...] = LAGS, vol_bars: int = VOL_BARS) -> list[dict]:
+    """One row per bar with enough history and a future close: features are the returns over
+    each lag (bps) and the std of 1-bar returns over vol_bars, all from closes at or before the
+    bar; the label is the sign of the move to the close horizon_bars later (ties dropped)."""
+    need = max(max(lags), vol_bars)
+    rows = []
+    for i in range(need, len(closes) - horizon_bars):
+        c = closes[i]
+        x = [(c / closes[i - k] - 1) * 1e4 for k in lags]
+        r1 = [(closes[j] / closes[j - 1] - 1) * 1e4 for j in range(i - vol_bars + 1, i + 1)]
+        m = sum(r1) / len(r1)
+        x.append(math.sqrt(sum((v - m) ** 2 for v in r1) / len(r1)))
+        move = (closes[i + horizon_bars] / c - 1) * 1e4
+        if move == 0:
+            continue
+        rows.append({"i": i, "ts": ts[i], "x": x, "y": 1 if move > 0 else 0, "move_bps": move})
+    return rows
+
+
+def fit_predict(train_x, train_y, test_x) -> tuple[list[float], list[float]]:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    model = make_pipeline(StandardScaler(), LogisticRegression(C=1.0, max_iter=1000))
+    model.fit(train_x, train_y)
+    return list(model.predict_proba(train_x)[:, 1]), list(model.predict_proba(test_x)[:, 1])
+
+
+def run(cache: Path, refresh: bool) -> list[dict]:
+    out = []
+    for venue in INFO:
+        for h_min, interval in HORIZONS:
+            ts, closes = load(cache, venue, interval, refresh)
+            hb = h_min * 60 // INTERVAL_S[interval]
+            rows = features_and_labels(ts, closes, hb)
+            train, test = split_with_gap(len(rows), gap=hb)
+            tr = [rows[i] for i in train]
+            te = [rows[i] for i in test]
+            p_train, p_test = fit_predict([r["x"] for r in tr], [r["y"] for r in tr],
+                                          [r["x"] for r in te])
+            thr = confident_threshold(p_train)
+            res = evaluate(p_test, [r["y"] for r in rows], test, [r["move_bps"] for r in te],
+                           thr, block=hb)
+            out.append({"venue": venue, "horizon_min": h_min, "interval": interval,
+                        "days": (ts[-1] - ts[0]) / 86400, "test_from": te[0]["ts"],
+                        "res": res})
+    return out
+
+
+def fmt(x, nd=2, sign=False):
+    if x is None:
+        return "n/a"
+    return f"{x:+.{nd}f}" if sign else f"{x:.{nd}f}"
+
+
+def report(rows: list[dict]) -> str:
+    lines = [
+        "<!-- Generated by study/candles.py. Do not edit. -->",
+        "# Feasibility A: price-only predictability from candles",
+        "",
+        "Plan: `.pipeline/feasibility-plan.md`. Logistic regression on past returns (1, 5, 15, 60",
+        "bars) and recent volatility; fitted on the first 60% of each series, one horizon skipped,",
+        "scored on the rest. Moves are close to close (last trade, so testnet's wider spread adds",
+        "bounce). Ties dropped. 95% moving-block bootstrap intervals, blocks one horizon long.",
+        f"Costs: maker {COSTS_BPS['maker']} bps, taker {COSTS_BPS['taker']} bps.",
+        "",
+        "| Venue | Horizon | Candles | Days | Test n (blocks) | Up rate | Mean abs move bps "
+        "| Brier - base rate [95%] | AUC [95%] | Confident calls | Mean move called bps [95%] "
+        "| Reading |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        s = r["res"]
+        lines.append(
+            f"| {r['venue']} | {r['horizon_min']} min | {r['interval']} | {r['days']:.1f} "
+            f"| {s.n_test} ({s.n_blocks:.0f}) | {s.up_rate:.3f} | {s.abs_move_mean:.2f} "
+            f"| {fmt(s.brier_diff, 4, True)} [{fmt(s.brier_lo, 4, True)}, "
+            f"{fmt(s.brier_hi, 4, True)}] "
+            f"| {fmt(s.auc, 3)} [{fmt(s.auc_lo, 3)}, {fmt(s.auc_hi, 3)}] | {s.n_confident} "
+            f"| {fmt(s.edge_mean, 2, True)} [{fmt(s.edge_lo, 2, True)}, "
+            f"{fmt(s.edge_hi, 2, True)}] | {s.edge_verdict()} |")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--cache", default="data/candles")
+    ap.add_argument("--out", default="study/results")
+    ap.add_argument("--refresh", action="store_true", help="refetch candles into the cache")
+    args = ap.parse_args(argv)
+    rows = run(Path(args.cache), args.refresh)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "candles.md").write_text(report(rows))
+    print(report(rows))
+
+
+if __name__ == "__main__":
+    main()
