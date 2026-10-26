@@ -104,6 +104,7 @@ Acceptance: an hour of live testnet trading; fills, position, fees and P&L match
 - `MAKER_PROMPT=mainnet` turns the block and the mainnet reader on; the default (`MAKER_PROMPT=standard`) is today's prompt with no mainnet requests, so the current decider keeps working unchanged. The taker is unaffected.
 - When the latest mainnet book is older than 5 s (or missing), the decision is a hold (new reason `no_mainnet`) and the resting quote is left as it is, as for a late answer: the model never saw a prompt without fresh mainnet prices.
 - A mainnet outage is not a kill-switch trigger (it never touches orders); it is logged and shown.
+- Warm-up (user decision 2026-10-26): with `MAKER_PROMPT=mainnet`, the first 310 s after the run's first testnet book are holds (reason `warmup`, no model call, no quote), because training skipped each recording's first 310 s and the model never saw a prompt without 5 minutes of history. The standard prompt is unaffected.
 - The fine-tuned model is served at temperature 1.0 (it was trained with cross-entropy at T = 1); serving is outside this repository.
 
 ### Milestone 5: Decider backend and soak
