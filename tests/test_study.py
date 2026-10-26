@@ -137,3 +137,60 @@ def test_label_is_dropped_when_the_future_book_is_stale():
     d = build(v, 60, stride=1)
     target = d["t"] + 60
     assert not np.any((target > 1005) & (target <= 1100))
+
+
+def _replay_inputs(n=900, seed=0):
+    import numpy as np
+    from finetune_data import Series
+
+    from jevhl.feed import Book, Print
+    rng = np.random.default_rng(seed)
+    mids = 80000 + np.cumsum(rng.normal(0, 1, n)).round()
+    books = [Book(ts=float(i), recv_ts=float(i) + 0.3, coin="BTC",
+                  bids=[[m - 0.5 - k, 0.3] for k in range(20)],
+                  asks=[[m + 0.5 + k, 0.3] for k in range(20)]) for i, m in enumerate(mids)]
+    prints = [Print(float(i), float(i) + 0.2, "buy" if i % 3 else "sell", float(mids[i]), 0.01, i)
+              for i in range(0, n, 2)]
+    main = Series([float(i) for i in range(n)], list(mids + 40))
+    return books, prints, main
+
+
+def test_finetune_prompt_is_the_bots_prompt_plus_a_mainnet_block_before_the_question():
+    from finetune_data import build_rows
+    books, prints, main = _replay_inputs()
+    r = build_rows(books, prints, main)[0]
+    assert r["context_mainnet"].startswith(r["context"].rsplit("\nQuestion: ", 1)[0])
+    assert r["context_mainnet"].endswith("\nQuestion: Will the mid price be higher in 60 seconds?")
+    assert "Mainnet (the main Hyperliquid market) BTC mid" in r["context_mainnet"]
+    assert "Mainnet" not in r["context"]
+    assert r["question"] == "Will the mid price be higher in 60 seconds?"
+    assert r["options"] == ["up", "down"]
+
+
+def test_finetune_prompt_never_sees_the_future_and_label_is_the_60s_move():
+    from dataclasses import replace
+
+    from finetune_data import build_rows
+    books, prints, main = _replay_inputs()
+    rows = build_rows(books, prints, main)
+    r = rows[len(rows) // 2]
+    later = [replace(b, bids=[[px + 7, sz] for px, sz in b.bids],
+                     asks=[[px + 7, sz] for px, sz in b.asks]) if b.recv_ts > r["t"] else b
+             for b in books]
+    later_prints = [replace(p, side="sell") if p.recv_ts > r["t"] else p for p in prints]
+    r2 = next(x for x in build_rows(later, later_prints, main) if x["t"] == r["t"])
+    assert r2["context_mainnet"] == r["context_mainnet"]
+    fut = next(b for b in reversed(books) if b.recv_ts <= r["t"] + 60).mid
+    assert r["move_bps"] == pytest.approx((fut / r["mid"] - 1) * 1e4)
+    assert r["gold"] == (0 if r["move_bps"] > 0 else 1)
+    assert r2["move_bps"] != r["move_bps"]
+
+
+def test_finetune_split_leaves_one_horizon_between_train_and_test():
+    from finetune_data import build_rows, split
+    books, prints, main = _replay_inputs(n=2000)
+    rows = build_rows(books, prints, main)
+    split(rows)
+    last_train = max(r["t"] for r in rows if r["split"] == "train")
+    first_test = min(r["t"] for r in rows if r["split"] == "test")
+    assert first_test - last_train >= 60
