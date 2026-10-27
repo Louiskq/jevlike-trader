@@ -186,6 +186,38 @@ def test_finetune_prompt_never_sees_the_future_and_label_is_the_60s_move():
     assert r2["move_bps"] != r["move_bps"]
 
 
+def test_finetune_rows_use_the_bots_mainnet_renderer():
+    """The training prompt comes from the bot's own functions (single source of truth)."""
+    from collections import deque
+    from dataclasses import replace
+
+    from finetune_data import KEEP_MIDS_S, build_rows
+
+    from jevhl.feed import TradeTape
+    from jevhl.mainnet import mainnet_input
+    from jevhl.maker import build_input
+    from jevhl.prompt import render_maker_context
+    books, prints, main = _replay_inputs()
+    r = build_rows(books, prints, main)[3]
+    tape, mids, j = TradeTape(), deque(), 0
+    for b in books:
+        batch = []
+        while j < len(prints) and prints[j].recv_ts <= b.recv_ts:
+            batch.append(prints[j])
+            j += 1
+        if batch:
+            tape.add(batch, b.recv_ts)
+        mids.append((b.recv_ts, b.mid))
+        while mids and mids[0][0] < b.recv_ts - KEEP_MIDS_S:
+            mids.popleft()
+        if b.recv_ts == r["t"]:
+            break
+    inp = build_input(b, list(mids), tape, [], 60.0)
+    mi = mainnet_input(b.recv_ts, b.mid, main.at)
+    assert r["context_mainnet"] == render_maker_context(replace(inp, mainnet=mi))
+    assert r["context"] == render_maker_context(inp)
+
+
 def test_finetune_split_leaves_one_horizon_between_train_and_test():
     from finetune_data import build_rows, split
     books, prints, main = _replay_inputs(n=2000)

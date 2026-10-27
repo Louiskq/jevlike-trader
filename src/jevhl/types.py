@@ -58,10 +58,22 @@ class ModelInput:
 
 
 @dataclass(frozen=True)
+class MainnetInput:
+    """Mainnet prices for the maker prompt's mainnet block (milestone 10), from
+    maker.mainnet_input. returns_bps: window s -> mainnet mid change, None when no mainnet
+    mid fresh enough was there at that time."""
+
+    mid: float
+    gap_bps: float  # (testnet mid / mainnet mid - 1) * 1e4
+    returns_bps: dict[int, float | None]
+
+
+@dataclass(frozen=True)
 class MakerInput(ModelInput):
     """The maker's input (milestone 8): the book (all 20 REST levels, our own resting order
     removed) plus features built in maker.build_input; rendered by prompt.render_maker_context.
-    It is a ModelInput, so the mock model reads its bids and asks as before."""
+    It is a ModelInput, so the mock model reads its bids and asks as before. `mainnet` is set
+    only with MAKER_PROMPT=mainnet (milestone 10)."""
 
     imbalance: float = 0.0  # (bid - ask) / (bid + ask) size near the mid, -1..1
     depth: dict[float, tuple[float, float]] = field(default_factory=dict)  # bps -> (bid, ask)
@@ -69,6 +81,7 @@ class MakerInput(ModelInput):
     sampled_mids: list[float | None] = field(default_factory=list)  # oldest first
     flow: dict = field(default_factory=dict)  # TradeTape.flow over the flow window
     prints: list[tuple[float, str, float, float]] = field(default_factory=list)  # age, side, px, sz
+    mainnet: MainnetInput | None = None
 
 
 @dataclass(frozen=True)

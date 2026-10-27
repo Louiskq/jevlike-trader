@@ -469,7 +469,10 @@ def test_the_wrapper_exposes_no_transfer_or_withdrawal_and_no_mainnet_url():
     for py in src.glob("*.py"):
         text = py.read_text()
         assert "api.hyperliquid.xyz" not in text, py.name
-        assert "MAINNET" not in text, py.name
+        assert "MAINNET_API_URL" not in text, py.name  # the SDK's mainnet constant
+        # milestone 10: the mainnet block's wording and its mainnet-only module
+        if py.name not in ("prompt.py", "mainnet.py"):
+            assert "MAINNET" not in text, py.name
         for w in ("usd_transfer", "withdraw_from_bridge", "send_asset", "usd_class_transfer",
                   "spot_transfer", "approve_agent", "vault_usd_transfer"):
             assert w not in text, (py.name, w)

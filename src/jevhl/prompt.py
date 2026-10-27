@@ -10,13 +10,18 @@ Two drafts: the taker's (render_context, unchanged since milestone 5) and the ma
 bands, return windows, flow window, number of prints): what the model is shown is the user's
 call too. The maker draft does not show the position or which side the cap allows (user
 decision 2026-10-10); it asks the same 60 s question as the taker.
+
+Milestone 10 adds the mainnet block (MAKER_PROMPT=mainnet), just before the question. The
+fine-tuned decider was trained on exactly this wording (study/finetune_data.py renders its
+data with these functions): changing any maker or mainnet wording means the live prompt no
+longer matches what that model saw (tests/test_mainnet_prompt.py says so when it happens).
 """
 
 from __future__ import annotations
 
 import math
 
-from .types import MakerInput, ModelInput
+from .types import MainnetInput, MakerInput, ModelInput
 
 # ---- DRAFT WORDING: edit freely ----
 MARKET_LINE = "Market: {coin} perpetual on Hyperliquid. Mid {mid}, spread {spread_bps:.2f} bps."
@@ -76,6 +81,16 @@ MAKER_INSTRUCTIONS = (
 )
 # ---- end of maker draft wording ----
 
+# ---- MAINNET DRAFT WORDING: assistant's draft (user chose to add mainnet prices, 2026-10-26).
+# The fine-tuned decider was trained on it: edit only together with a new fine-tune. ----
+MAINNET_WINDOWS_S = (5, 15, 60)
+MAINNET_MAX_AGE_S = 5.0  # an older mainnet mid is not shown: a hold now, "n/a" for the past
+MAINNET_LINE = ("Mainnet (the main Hyperliquid market) BTC mid {mid}; this market's mid is "
+                "{gap:+.1f} bps from it.")
+MAINNET_RETURNS_LINE = "Mainnet mid change: {parts}"
+MAINNET_RETURN_PART = "{w:g} s {r}"
+# ---- end of mainnet draft wording ----
+
 
 def render_context(inp: ModelInput) -> str:
     lines = [MARKET_LINE.format(coin=inp.coin, mid=price(inp.mid, 1), spread_bps=inp.spread_bps),
@@ -119,5 +134,14 @@ def render_maker_context(inp: MakerInput) -> str:
     lines += [MAKER_PRINT_LINE.format(age=age, side=side, px=price(px), sz=sz)
               for age, side, px, sz in inp.prints] or [MAKER_NO_PRINTS]
     lines.append(MAKER_INSTRUCTIONS)
+    if inp.mainnet is not None:
+        lines.append(mainnet_block(inp.mainnet))
     lines.append(QUESTION_PREFIX + question_text(inp.horizon_s))
     return "\n".join(lines)
+
+
+def mainnet_block(mi: MainnetInput) -> str:
+    parts = [MAINNET_RETURN_PART.format(w=w, r=MISSING if r is None else f"{r:+.1f} bps")
+             for w, r in mi.returns_bps.items()]
+    return "\n".join([MAINNET_LINE.format(mid=price(mi.mid, 1), gap=mi.gap_bps),
+                      MAINNET_RETURNS_LINE.format(parts=", ".join(parts))])
