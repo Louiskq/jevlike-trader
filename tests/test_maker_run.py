@@ -282,3 +282,185 @@ def test_strategy_warning_for_a_db_used_by_the_other_strategy():
     store.log_event(T0, "strategy", "maker")
     assert "STRATEGY=maker" in strategy_warning(store, Config())
     assert strategy_warning(store, MCFG) is None
+
+
+# ---- MAKER_PROMPT=mainnet (milestone 10) ----
+
+NCFG = Config(strategy="maker", max_position_usd=15.0, maker_prompt="mainnet")
+KEY = "0x" + "11" * 32
+
+
+def mainnet_book(t):
+    return Book(ts=t, recv_ts=t, coin="BTC", bids=[[64990.0, 1.0]], asks=[[64991.0, 1.0]])
+
+
+def synced_feeds(clock, box, n, step=60.0):
+    """Testnet books every `step` s of mock time, each sent only once the trader's mainnet
+    history holds a book received 0.5 s before it (the two feeds run as separate tasks)."""
+    async def main_books():
+        last = None
+        while True:
+            if clock.t != last:
+                last = clock.t
+                yield mainnet_book(last - 0.5)
+            await asyncio.sleep(0.002)
+
+    async def books():
+        for i in range(n):
+            clock.t = T0 + i * step
+            while (box["tr"].mainnet.latest() or (0.0,))[0] < clock.t - 0.5:
+                await asyncio.sleep(0.002)
+            yield mkbook(recv_ts=clock.t)
+            await asyncio.sleep(0.02)
+
+    return books(), main_books()
+
+
+def test_maker_mainnet_dry_run_end_to_end_with_fake_feeds():
+    clock, store, box = Clock(), Store(":memory:"), {}
+    books, main_books = synced_feeds(clock, box, 8)
+    tr = asyncio.run(dry_run(NCFG, store, BTC, books, model=StubModel(0.9), clock=clock,
+                             mainnet_books=main_books, on_trader=lambda t: box.update(tr=t)))
+    assert tr.error is None and tr.mainnet is box["tr"].mainnet
+    assert [d["reason"] for d in store.decisions()] == ["warmup"] * 6 + ["signal"] * 2
+    assert len([e for e in store.events() if e["kind"] == "mainnet_input"]) == 2
+    assert ("mainnet prompt: 2 decisions with the block, 6 warmup holds, 0 no_mainnet holds, "
+            "0 stale spells") in format_report(store, tr)
+
+
+def test_report_counts_no_mainnet_holds():
+    clock, store = Clock(), Store(":memory:")
+    tr = asyncio.run(dry_run(NCFG, store, BTC, books_at(clock, 3, step=200.0),
+                             model=StubModel(0.9), clock=clock))  # no reader: never fresh
+    assert [d["reason"] for d in store.decisions()] == ["warmup", "warmup", "no_mainnet"]
+    assert "0 decisions with the block, 2 warmup holds, 1 no_mainnet holds, 1 stale spells" in (
+        format_report(store, tr))
+    assert "mainnet prompt" not in format_report(Store(":memory:"), dry_run_standard())
+
+
+def dry_run_standard():
+    clock = Clock()
+    return asyncio.run(dry_run(MCFG, Store(":memory:"), BTC, books_at(clock, 1),
+                               model=StubModel(0.9), clock=clock))
+
+
+def test_mainnet_prompt_without_a_reader_holds_no_mainnet():
+    clock, store = Clock(), Store(":memory:")
+    asyncio.run(dry_run(NCFG, store, BTC, books_at(clock, 2, step=320.0),
+                        model=StubModel(0.9), clock=clock))
+    assert [d["reason"] for d in store.decisions()] == ["warmup", "no_mainnet"]
+
+
+def test_a_broken_mainnet_stream_is_logged_and_the_run_goes_on():
+    clock, store = Clock(), Store(":memory:")
+
+    async def main_books():
+        raise RuntimeError("bad mainnet stream")
+        yield  # pragma: no cover
+
+    tr = asyncio.run(dry_run(NCFG, store, BTC, books_at(clock, 3), model=StubModel(0.9),
+                             clock=clock, mainnet_books=main_books()))
+    assert len(store.decisions()) == 3 and tr.error is None and tr.kill_reason is None
+    assert any("bad mainnet stream" in e["detail"]
+               for e in store.events() if e["kind"] == "mainnet_error")
+
+
+def test_taker_ignores_maker_prompt_mainnet(monkeypatch):
+    cfg = Config.from_env({"MAKER_PROMPT": "mainnet"})
+
+    def boom(*a, **k):
+        raise AssertionError("the taker opened the mainnet reader")
+
+    monkeypatch.setattr(run_mod, "poll_mainnet", boom)
+    assert run_mod.open_mainnet(cfg, lambda k, d: None) is None
+    clock, store = Clock(), Store(":memory:")
+
+    async def main_books():
+        raise AssertionError("the taker read the mainnet stream")
+        yield  # pragma: no cover
+
+    tr = asyncio.run(dry_run(cfg, store, BTC, books_at(clock, 2, step=5.3),
+                             model=StubModel(0.9), clock=clock, mainnet_books=main_books()))
+    assert type(tr) is Trader and not hasattr(tr, "mainnet")
+    assert not [e for e in store.events() if e["kind"].startswith("mainnet")]
+
+
+def _main_maker(tmp_path, monkeypatch, prompt, poll_mainnet):
+    _env(monkeypatch, key=True, addr=True)  # a key in the config: it must never reach the reader
+    monkeypatch.setenv("STRATEGY", "maker")
+    monkeypatch.setenv("MAX_POSITION_USD", "15")
+    monkeypatch.setenv("MAKER_PROMPT", prompt)
+    monkeypatch.setattr(run_mod, "fetch_meta", lambda coin: BTC)
+    urls = []
+
+    def urlopen(req, *a, **k):
+        urls.append(getattr(req, "full_url", req))
+        raise AssertionError("network touched")
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    async def rest(*a, **k):
+        for _ in range(3):
+            yield mkbook(recv_ts=time.time())
+            await asyncio.sleep(0.05)
+
+    async def trades(*a, **k):
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(run_mod, "poll_books", rest)
+    monkeypatch.setattr(run_mod, "stream_trades", trades)
+    monkeypatch.setattr(run_mod, "poll_mainnet", poll_mainnet)
+    monkeypatch.setattr(run_mod, "build_model", lambda cfg: StubModel(0.9))
+    run_mod.main(["--db", str(tmp_path / "m.db"), "--seconds", "1"])
+    return Store(str(tmp_path / "m.db")), urls
+
+
+def test_standard_prompt_opens_no_mainnet_reader_and_makes_no_mainnet_request(
+        tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("the standard prompt opened the mainnet reader")
+
+    store, urls = _main_maker(tmp_path, monkeypatch, "standard", boom)
+    assert urls == []
+    assert [d["reason"] for d in store.decisions()] == ["signal"] * 3
+    assert not [e for e in store.events() if e["kind"].startswith("mainnet")]
+    assert run_mod.open_mainnet(Config(strategy="maker"), lambda k, d: None) is None
+
+
+def test_main_wires_the_mainnet_reader_and_passes_it_nothing_key_like(tmp_path, monkeypatch):
+    seen = []
+
+    async def reader(*a, **k):
+        seen.append((a, k))
+        k["on_event"]("rest_error", "probe")  # the reader's own events reach the store
+        yield mainnet_book(time.time())
+        await asyncio.Event().wait()
+
+    store, urls = _main_maker(tmp_path, monkeypatch, "mainnet", reader)
+    assert urls == [] and len(seen) == 1
+    (args, kwargs), = seen
+    assert set(kwargs) == {"on_event"}  # no on_rate_limit: a mainnet 429 never pauses quoting
+    assert len(args) == 1 and callable(args[0])
+    for x in (*args, *kwargs.values()):
+        assert KEY not in repr(x) and ADDR not in repr(x)
+    assert [d["reason"] for d in store.decisions()] == ["warmup"] * 3
+    assert [e["detail"] for e in store.events() if e["kind"] == "rest_error"] == ["probe"]
+
+
+def test_the_mainnet_reader_has_no_rate_limit_hook():
+    import inspect
+
+    from jevhl.mainnet import poll_mainnet
+    assert "on_rate_limit" not in inspect.signature(poll_mainnet).parameters
+
+
+def test_nothing_key_like_reaches_the_mainnet_history():
+    cfg = Config(strategy="maker", max_position_usd=15.0, maker_prompt="mainnet", api_key=KEY,
+                 account_address=ADDR)
+    clock, store, box = Clock(), Store(":memory:"), {}
+    books, main_books = synced_feeds(clock, box, 2)
+    tr = asyncio.run(dry_run(cfg, store, BTC, books, model=StubModel(0.9), clock=clock,
+                             mainnet_books=main_books, on_trader=lambda t: box.update(tr=t)))
+    state = repr(vars(tr.mainnet))
+    assert KEY not in state and ADDR not in state and tr.mainnet.latest() is not None

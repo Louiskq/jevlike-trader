@@ -16,6 +16,10 @@ REST book plus the trades feed; MAKER_SIZE_USD (default 11) and MAKER_DECIDER_DE
 (default 1) apply. Use a separate --db per strategy (a warning says so otherwise), e.g.
 
     STRATEGY=maker uv run python -m jevhl.run --seconds 1800 --db maker.db
+
+MAKER_PROMPT=mainnet (milestone 10, maker only) adds mainnet prices to the maker prompt, for
+the fine-tuned decider: the bot then also reads mainnet's public BTC book, read-only (see
+jevhl.mainnet), and holds for the first 310 s of the run. Default: standard.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from .exchange import FILL_OVERLAP_MS, Exchange, build_exchange
 from .feed import INFO_URL, Book, Print, poll_books, stream_books, stream_trades
 from .latency import latency_report
 from .ledger import Ledger
+from .mainnet import WARMUP_S, MainnetHistory, poll_mainnet
 from .maker import MakerTrader
 from .model import MockModel, build_model
 from .paper import PaperExchange
@@ -126,6 +131,26 @@ def open_trades(cfg: Config, on_event: Callable[[str, str], None]) -> AsyncItera
                          ping_s=cfg.feed_ping_s, dead_s=cfg.feed_dead_s)
 
 
+def open_mainnet(cfg: Config,
+                 on_event: Callable[[str, str], None]) -> AsyncIterator[Book] | None:
+    """The mainnet reader's books (read-only), only for the maker with MAKER_PROMPT=mainnet.
+    It is given nothing from the config: the clock and where to log its events."""
+    if not cfg.mainnet_prompt:
+        return None
+    return poll_mainnet(time.time, on_event=on_event)
+
+
+async def _follow_mainnet(history: MainnetHistory, books: AsyncIterator[Book], store: Store,
+                          clock: Callable[[], float]) -> None:
+    """Feed the maker's mainnet history; a stream that breaks is logged and the bot goes on
+    (its decisions are then no_mainnet holds)."""
+    try:
+        async for book in books:
+            history.add(book.recv_ts, book.mid)
+    except Exception as e:
+        store.log_event(clock(), "mainnet_error", f"{type(e).__name__}: {e}")
+
+
 async def _follow_trades(trader: MakerTrader, trades: AsyncIterator[list[Print]], store: Store,
                          clock: Callable[[], float]) -> None:
     """Feed the maker's trade tape; a stream that breaks is logged and the bot goes on (its
@@ -156,10 +181,12 @@ async def dry_run(
     rss_every_s: float = 60.0,
     rss: Callable[[], int] = current_rss_kb,
     trades: AsyncIterator[list[Print]] | None = None,
+    mainnet_books: AsyncIterator[Book] | None = None,
 ) -> Trader:
     """The trading run. executor: the live Exchange, or None for simulated (paper) fills.
     Process memory is logged every rss_every_s seconds (and once at the end) for the soak report.
-    STRATEGY=maker runs the MakerTrader, fed by `trades` as well as the books."""
+    STRATEGY=maker runs the MakerTrader, fed by `trades` as well as the books, and with
+    MAKER_PROMPT=mainnet by `mainnet_books` (ignored otherwise)."""
     cls = MakerTrader if cfg.strategy == "maker" else Trader
     trader = cls(
         cfg, store, model or MockModel(), executor or PaperExchange(store, meta, cfg.coin),
@@ -174,6 +201,10 @@ async def dry_run(
     tape = None
     if isinstance(trader, MakerTrader) and trades is not None:
         tape = asyncio.create_task(_follow_trades(trader, trades, store, clock))
+    main_task = None
+    if isinstance(trader, MakerTrader) and trader.mainnet is not None and mainnet_books is not None:
+        main_task = asyncio.create_task(_follow_mainnet(trader.mainnet, mainnet_books, store,
+                                                        clock))
     run = asyncio.ensure_future(trader.run(books))
     try:
         await asyncio.wait_for(asyncio.shield(run), duration_s)
@@ -190,9 +221,10 @@ async def dry_run(
         trader.stopped = True
         dog.cancel()
         sampler.cancel()
-        if tape is not None:
-            tape.cancel()
-        await asyncio.gather(sampler, *([tape] if tape else []), return_exceptions=True)
+        extra = [t for t in (tape, main_task) if t is not None]
+        for t in extra:
+            t.cancel()
+        await asyncio.gather(sampler, *extra, return_exceptions=True)
         store.log_event(clock(), "rss", str(await asyncio.to_thread(rss)))
     return trader
 
@@ -234,6 +266,7 @@ async def dry_run_with_dashboard(
     rss_every_s: float = 60.0,
     rss: Callable[[], int] = current_rss_kb,
     trades: AsyncIterator[list[Print]] | None = None,
+    mainnet_books: AsyncIterator[Book] | None = None,
 ) -> Trader:
     """dry_run plus the dashboard on 127.0.0.1:port (0 = any free port) in the same event
     loop. If the kill switch stopped the trader, the dashboard stays up for linger_s seconds
@@ -267,7 +300,7 @@ async def dry_run_with_dashboard(
         trader = await dry_run(
             cfg, store, meta, books, model=model, clock=clock, duration_s=duration_s,
             on_trader=_both(traders.append, on_trader), executor=executor,
-            rss_every_s=rss_every_s, rss=rss, trades=trades,
+            rss_every_s=rss_every_s, rss=rss, trades=trades, mainnet_books=mainnet_books,
         )
         if trader.kill_reason and not server_task.done():
             await asyncio.wait({server_task}, timeout=linger_s)
@@ -328,6 +361,14 @@ def format_report(store: Store, trader: Trader, exchange: Exchange | None = None
     lines.append(f"stale pauses {trader.stale_pauses}  resumes {trader.stale_resumes}"
                  + ("  (paused at the end)" if trader.ended_paused else ""))
     lines.append(f"stopped={trader.stopped} kill={trader.kill_reason}")
+    if isinstance(trader, MakerTrader) and trader.mainnet is not None:
+        n = {r: 0 for r in ("warmup", "no_mainnet")}
+        for d in store.decisions():
+            if d["reason"] in n:
+                n[d["reason"]] += 1
+        lines.append(f"mainnet prompt: {ev.get('mainnet_input', 0)} decisions with the block, "
+                     f"{n['warmup']} warmup holds, {n['no_mainnet']} no_mainnet holds, "
+                     f"{trader.mainnet_stale_spells} stale spells")
     if isinstance(trader, MakerTrader):
         for kind, s in trader.latency_summary().items():
             lines.append(f"maker {kind} ms (n={s['n']}): p50 {_f(s['p50'], 1)}  "
@@ -391,6 +432,10 @@ def main(argv: list[str] | None = None) -> None:
 
     model = build_model(cfg)
     trades = open_trades(cfg, on_event) if cfg.strategy == "maker" else None
+    mainnet_books = open_mainnet(cfg, on_event)
+    if mainnet_books is not None:
+        print("MAKER_PROMPT=mainnet: reading mainnet's public BTC book (read-only); holding "
+              f"for the first {WARMUP_S:g} s", flush=True)
 
     traders: list[Trader] = []
 
@@ -408,11 +453,12 @@ def main(argv: list[str] | None = None) -> None:
                 cfg, args.db, store, meta, open_feed(cfg, on_event, on_rate_limit),
                 port=args.port, duration_s=args.seconds, linger_s=None, on_ready=announce,
                 on_trader=traders.append, executor=exchange, model=model, trades=trades,
+                mainnet_books=mainnet_books,
             )
         return await dry_run(
             cfg, store, meta, open_feed(cfg, on_event, on_rate_limit),
             duration_s=args.seconds, executor=exchange, model=model, on_trader=traders.append,
-            trades=trades,
+            trades=trades, mainnet_books=mainnet_books,
         )
 
     try:

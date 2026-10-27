@@ -224,3 +224,52 @@ def test_leftover_bad_maker_settings_do_not_stop_the_taker(env):
 def test_validate_rejects_nonfinite_maker_settings_set_directly(field):
     with pytest.raises(ConfigError):
         Config(strategy="maker", **{field: float("nan")}).validate()
+
+
+# ---- maker prompt (milestone 10) ----
+
+MAKER = {"STRATEGY": "maker", "MAX_POSITION_USD": "15"}
+
+
+def test_maker_prompt_defaults_to_standard():
+    assert Config.from_env(MAKER).maker_prompt == "standard"
+    assert Config.from_env({**MAKER, "MAKER_PROMPT": ""}).maker_prompt == "standard"
+    assert Config().maker_prompt == "standard"
+
+
+def test_maker_prompt_mainnet_is_read_for_the_maker():
+    c = Config.from_env({**MAKER, "MAKER_PROMPT": "mainnet"})
+    assert c.maker_prompt == "mainnet" and c.mainnet_prompt
+    assert not Config.from_env({**MAKER, "MAKER_PROMPT": "standard"}).mainnet_prompt
+
+
+@pytest.mark.parametrize("bad", ["Mainnet", "MAINNET", "on", "mainet", "fine-tuned"])
+def test_bad_maker_prompt_is_rejected(bad):
+    with pytest.raises(ConfigError):
+        Config.from_env({**MAKER, "MAKER_PROMPT": bad})
+
+
+@pytest.mark.parametrize("raw", ["mainnet", "bogus"])
+def test_maker_prompt_is_ignored_for_the_taker(raw):
+    c = Config.from_env({"MAKER_PROMPT": raw})
+    assert c.strategy == "taker" and c.maker_prompt == "standard" and not c.mainnet_prompt
+    assert not Config(maker_prompt="mainnet").mainnet_prompt  # set directly: still the taker
+
+
+def test_mainnet_prompt_needs_coin_btc():
+    with pytest.raises(ConfigError):
+        Config.from_env({**MAKER, "MAKER_PROMPT": "mainnet", "COIN": "ETH"})
+    Config.from_env({**MAKER, "COIN": "ETH"})  # the standard prompt works for any coin
+
+
+def test_validate_rejects_bad_maker_prompt_set_directly():
+    with pytest.raises(ConfigError):
+        Config(strategy="maker", maker_prompt="other").validate()
+    with pytest.raises(ConfigError):
+        Config(strategy="maker", maker_prompt="mainnet", coin="ETH").validate()
+
+
+def test_mainnet_prompt_does_not_allow_network_mainnet():
+    with pytest.raises(ConfigError):
+        Config.from_env({**MAKER, "MAKER_PROMPT": "mainnet", "NETWORK": "mainnet"})
+    assert Config.from_env({**MAKER, "MAKER_PROMPT": "mainnet"}).network == "testnet"

@@ -28,7 +28,10 @@ REASONS = frozenset(
      "invalid",
      # maker (milestone 8): the cap moved the quote to the other side; quoting paused after a
      # rate-limit error
-     "capped", "rate_paused"}
+     "capped", "rate_paused",
+     # maker with MAKER_PROMPT=mainnet (milestone 10): no fresh mainnet price; the run's first
+     # 310 s (the fine-tuned model never saw a prompt with less history)
+     "no_mainnet", "warmup"}
 )
 
 
