@@ -9,7 +9,6 @@ import pytest
 
 from jevhl.config import Config
 from jevhl.mainnet import MainnetHistory, mainnet_input
-from jevhl.policy import hold
 from jevhl.prompt import render_maker_context
 from test_maker import (
     MCFG,
@@ -195,11 +194,6 @@ def test_mainnet_stale_and_fresh_are_logged_once_per_spell():
     assert "5 no_mainnet holds" in fresh and "5.5 s" in fresh
     tick(tr, clock, WARM + 17)
     assert len(events(store, "mainnet_stale")) == 2 and len(events(store, "mainnet_fresh")) == 1
-
-
-def test_no_mainnet_and_warmup_are_hold_reasons():
-    assert hold("no_mainnet", ts=1.0, gate=0.5).reason == "no_mainnet"
-    assert hold("warmup", ts=1.0, gate=0.5).reason == "warmup"
 
 
 # ---- recording ----

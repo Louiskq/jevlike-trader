@@ -451,6 +451,60 @@ def test_standard_prompt_opens_no_mainnet_reader_and_makes_no_mainnet_request(
     assert run_mod.open_mainnet(Config(strategy="maker"), lambda k, d: None) is None
 
 
+def _reachable(root, depth=6):
+    """Everything reachable from what the reader was given: containers, functools.partial
+    (func, args, keywords), functions (closure cells, defaults, keyword defaults), bound
+    methods (their object) and plain objects' attributes. Modules and classes are not
+    entered. A Config hides its key from repr, so the test looks for the object itself."""
+    import functools
+    import types
+    seen, out, todo = set(), [], [(root, 0)]
+    while todo:
+        x, d = todo.pop()
+        if id(x) in seen or d > depth or isinstance(x, types.ModuleType | type):
+            continue
+        seen.add(id(x))
+        out.append(x)
+        nxt = []
+        if isinstance(x, dict):
+            nxt = [*x.keys(), *x.values()]
+        elif isinstance(x, list | tuple | set | frozenset):
+            nxt = list(x)
+        elif isinstance(x, functools.partial):
+            nxt = [x.func, *x.args, *x.keywords.values()]
+        elif isinstance(x, types.FunctionType):
+            nxt = [c.cell_contents for c in (x.__closure__ or ())]
+            nxt += list(x.__defaults__ or ()) + list((x.__kwdefaults__ or {}).values())
+        elif getattr(x, "__self__", None) is not None:  # bound methods, builtin or not
+            nxt = [x.__self__, getattr(x, "__func__", None)]
+        elif hasattr(x, "__dict__"):
+            nxt = list(vars(x).values())
+        todo += [(y, d + 1) for y in nxt]
+    return out
+
+
+def test_reachable_sees_a_config_in_closures_defaults_and_partials():
+    import functools
+    cfg = Config(api_key=KEY)
+
+    def closure(k, d):
+        return cfg.coin
+
+    def default(k, d, c=cfg):
+        return k
+
+    class Holder:
+        def log(self, k, d):
+            return k
+
+    holder = Holder()
+    holder.cfg = cfg
+    for x in (closure, default, functools.partial(print, cfg), holder.log, holder,
+              {"on_event": lambda k, d, *, c=cfg: k}, KEY):
+        found = _reachable(((), {"on_event": x}))
+        assert any(isinstance(y, Config) or y == KEY for y in found), x
+
+
 def test_main_wires_the_mainnet_reader_and_passes_it_nothing_key_like(tmp_path, monkeypatch):
     seen = []
 
@@ -465,8 +519,9 @@ def test_main_wires_the_mainnet_reader_and_passes_it_nothing_key_like(tmp_path, 
     (args, kwargs), = seen
     assert set(kwargs) == {"on_event"}  # no on_rate_limit: a mainnet 429 never pauses quoting
     assert len(args) == 1 and callable(args[0])
-    for x in (*args, *kwargs.values()):
-        assert KEY not in repr(x) and ADDR not in repr(x)
+    leaks = [x for x in _reachable((args, kwargs))
+             if isinstance(x, Config) or (isinstance(x, str) and (KEY in x or ADDR in x))]
+    assert leaks == []
     assert [d["reason"] for d in store.decisions()] == ["warmup"] * 3
     assert [e["detail"] for e in store.events() if e["kind"] == "rest_error"] == ["probe"]
 
@@ -476,17 +531,6 @@ def test_the_mainnet_reader_has_no_rate_limit_hook():
 
     from jevhl.mainnet import poll_mainnet
     assert "on_rate_limit" not in inspect.signature(poll_mainnet).parameters
-
-
-def test_nothing_key_like_reaches_the_mainnet_history():
-    cfg = Config(strategy="maker", max_position_usd=15.0, maker_prompt="mainnet", api_key=KEY,
-                 account_address=ADDR)
-    clock, store, box = Clock(), Store(":memory:"), {}
-    books, main_books = synced_feeds(clock, box, 2)
-    tr = asyncio.run(dry_run(cfg, store, BTC, books, model=StubModel(0.9), clock=clock,
-                             mainnet_books=main_books, on_trader=lambda t: box.update(tr=t)))
-    state = repr(vars(tr.mainnet))
-    assert KEY not in state and ADDR not in state and tr.mainnet.latest() is not None
 
 
 def test_summary_carries_the_mainnet_view():

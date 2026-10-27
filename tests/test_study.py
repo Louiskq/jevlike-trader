@@ -226,3 +226,114 @@ def test_finetune_split_leaves_one_horizon_between_train_and_test():
     last_train = max(r["t"] for r in rows if r["split"] == "train")
     first_test = min(r["t"] for r in rows if r["split"] == "test")
     assert first_test - last_train >= 60
+
+
+# ---- frozen training-time code (study/finetune_data.py at fc94a57; do not edit: the
+# fine-tune was trained on rows built by exactly this) ----
+_T_HORIZON_S = 60.0
+_T_STRIDE = 5
+_T_WARMUP_S = 310.0
+_T_MAX_BOOK_AGE_S = 5.0
+_T_KEEP_MIDS_S = 310.0
+_T_MAINNET_WINDOWS_S = (5, 15, 60)
+_T_MAINNET_LINE = ("Mainnet (the main Hyperliquid market) BTC mid {mid}; this market's mid is "
+                   "{gap:+.1f} bps from it.")
+_T_MAINNET_RETURNS_LINE = "Mainnet mid change: {parts}"
+_T_MAINNET_RETURN_PART = "{w:g} s {r}"
+
+
+def _t_mainnet_block(m_mid, gap_bps, rets):
+    from jevhl.prompt import MISSING, price
+    parts = [_T_MAINNET_RETURN_PART.format(w=w, r=MISSING if r is None else f"{r:+.1f} bps")
+             for w, r in rets.items()]
+    return "\n".join([_T_MAINNET_LINE.format(mid=price(m_mid, 1), gap=gap_bps),
+                      _T_MAINNET_RETURNS_LINE.format(parts=", ".join(parts))])
+
+
+def _t_with_mainnet(context, block):
+    from jevhl.prompt import QUESTION_PREFIX
+    head, sep, q = context.rpartition("\n" + QUESTION_PREFIX)
+    assert sep, "prompt has no question line"
+    return f"{head}\n{block}{sep}{q}"
+
+
+class _TSeries:
+    def __init__(self, ts, vs):
+        self.ts, self.vs = ts, vs
+
+    def at(self, t):
+        import bisect
+        i = bisect.bisect_right(self.ts, t) - 1
+        return (None, float("inf")) if i < 0 else (self.vs[i], t - self.ts[i])
+
+
+def _t_build_rows(books, prints, main, horizon_s=_T_HORIZON_S, stride=_T_STRIDE):
+    from collections import deque
+
+    from jevhl.feed import TradeTape
+    from jevhl.maker import build_input
+    from jevhl.prompt import OPTIONS, question_text, render_maker_context
+    mids_series = _TSeries([b.recv_ts for b in books], [b.mid for b in books])
+    tape, mids = TradeTape(), deque()
+    j, rows = 0, []
+    t0, t_end = books[0].recv_ts, books[-1].recv_ts
+    for k, book in enumerate(books):
+        now = book.recv_ts
+        batch = []
+        while j < len(prints) and prints[j].recv_ts <= now:
+            batch.append(prints[j])
+            j += 1
+        if batch:
+            tape.add(batch, now)
+        mids.append((now, book.mid))
+        while mids and mids[0][0] < now - _T_KEEP_MIDS_S:
+            mids.popleft()
+        if k % stride or now < t0 + _T_WARMUP_S or now + horizon_s > t_end:
+            continue
+        fut, fage = mids_series.at(now + horizon_s)
+        m_now, mage = main.at(now)
+        if fut is None or fage > _T_MAX_BOOK_AGE_S or m_now is None or mage > _T_MAX_BOOK_AGE_S:
+            continue
+        move = (fut / book.mid - 1) * 1e4
+        if move == 0:
+            continue
+        rets = {}
+        for w in _T_MAINNET_WINDOWS_S:
+            past, page = main.at(now - w)
+            rets[w] = (None if past is None or page > _T_MAX_BOOK_AGE_S
+                       else (m_now / past - 1) * 1e4)
+        ctx = render_maker_context(build_input(book, list(mids), tape, [], horizon_s))
+        rows.append({
+            "t": now, "mid": book.mid, "move_bps": move,
+            "gold": 0 if move > 0 else 1,
+            "question": question_text(horizon_s), "options": list(OPTIONS),
+            "context": ctx,
+            "context_mainnet": _t_with_mainnet(
+                ctx, _t_mainnet_block(m_now, (book.mid / m_now - 1) * 1e4, rets)),
+        })
+    return rows
+# ---- end of frozen training-time code ----
+
+
+def test_finetune_rows_equal_the_training_time_rows():
+    """build_rows now uses the bot's mainnet_input and renderer; its rows must equal what the
+    training-time code built, over mainnet gaps (stale latest mid: row skipped; stale past
+    mid: n/a) and gaps of both signs."""
+    from finetune_data import Series, build_rows
+    books, prints, _ = _replay_inputs(n=1200)
+    ts, vs = [], []
+    for i, b in enumerate(books):
+        if 600 < i < 612 or 800 < i < 806:  # mainnet holes of 11 s and 5 s
+            continue
+        ts.append(float(i))
+        vs.append(b.mid + (40.0 if i < 700 else -30.0))  # testnet below, then above mainnet
+    rows = build_rows(books, prints, Series(ts, vs), stride=1)
+    want = _t_build_rows(books, prints, _TSeries(ts, vs), stride=1)
+    assert rows == want
+    by_t = {round(r["t"], 1): r["context_mainnet"] for r in rows}
+    assert 604.3 in by_t and 605.3 not in by_t  # latest mainnet mid 4.3 s vs 5.3 s old
+    assert 804.3 in by_t and 805.3 not in by_t
+    for part in ("change: 5 s n/a", ", 15 s n/a", ", 60 s n/a"):  # past mids in the holes
+        assert any(part in c for c in by_t.values()), part
+    gaps = [float(c.split("this market's mid is ")[1].split(" bps")[0]) for c in by_t.values()]
+    assert min(gaps) < 0 < max(gaps)
