@@ -106,13 +106,24 @@ def prepare_live(store: Store, exchange: Exchange, *, cancel_orders: bool = Fals
 
 def strategy_warning(store: Store, cfg: Config) -> str | None:
     """A database last used by the other strategy (one with decisions but no `strategy`
-    event predates the maker, so it is the taker's)."""
-    used = [e["detail"] for e in store.events() if e["kind"] == "strategy"]
+    event predates the maker, so it is the taker's), or, for the maker, one whose last maker
+    run used the other MAKER_PROMPT (a maker run without a `maker_prompt` event predates
+    milestone 10, so it used the standard prompt). The report reads the whole file, so either
+    would blend two runs' decisions."""
+    events = store.events()
+    used = [e["detail"] for e in events if e["kind"] == "strategy"]
     last = used[-1] if used else ("taker" if store.recent_decisions(1) else None)
-    if last is None or last == cfg.strategy:
+    if last is not None and last != cfg.strategy:
+        return (f"WARNING: this database was last used with STRATEGY={last}; use a separate "
+                f"--db for STRATEGY={cfg.strategy}")
+    if cfg.strategy != "maker" or "maker" not in used:
         return None
-    return (f"WARNING: this database was last used with STRATEGY={last}; use a separate --db "
-            f"for STRATEGY={cfg.strategy}")
+    prompts = [e["detail"] for e in events if e["kind"] == "maker_prompt"]
+    last_prompt = prompts[-1] if prompts else "standard"
+    if last_prompt == cfg.maker_prompt:
+        return None
+    return (f"WARNING: this database was last used with MAKER_PROMPT={last_prompt}; use a "
+            f"separate --db for MAKER_PROMPT={cfg.maker_prompt}")
 
 
 def open_feed(cfg: Config, on_event: Callable[[str, str], None],
@@ -194,6 +205,8 @@ async def dry_run(
     )
     mark_run_start(store, clock)
     store.log_event(clock(), "strategy", cfg.strategy)
+    if cfg.strategy == "maker":  # which prompt, for strategy_warning on the next run
+        store.log_event(clock(), "maker_prompt", cfg.maker_prompt)
     if on_trader is not None:
         on_trader(trader)
     dog = asyncio.create_task(_watchdog(trader))

@@ -287,6 +287,29 @@ def test_strategy_warning_for_a_db_used_by_the_other_strategy():
 # ---- MAKER_PROMPT=mainnet (milestone 10) ----
 
 NCFG = Config(strategy="maker", max_position_usd=15.0, maker_prompt="mainnet")
+
+
+def test_a_mainnet_run_on_a_standard_maker_db_warns_and_the_reverse():
+    """The report's calibration and mainnet counts read the whole file: a database last used
+    by a maker run with the other prompt would blend two deciders' decisions."""
+    store = Store(":memory:")
+    assert strategy_warning(store, NCFG) is None  # a new database
+    store.log_event(T0, "strategy", "maker")  # a maker run from before milestone 10: standard
+    assert "MAKER_PROMPT=standard" in strategy_warning(store, NCFG)
+    assert "use a separate --db for MAKER_PROMPT=mainnet" in strategy_warning(store, NCFG)
+    assert strategy_warning(store, MCFG) is None
+    for cfg, other in ((MCFG, NCFG), (NCFG, MCFG)):  # what dry_run records, both ways
+        clock, store = Clock(), Store(":memory:")
+        asyncio.run(dry_run(cfg, store, BTC, books_at(clock, 1), model=StubModel(0.9),
+                            clock=clock))
+        assert [e["detail"] for e in store.events() if e["kind"] == "maker_prompt"] == [
+            cfg.maker_prompt]
+        assert strategy_warning(store, cfg) is None  # same prompt: no warning
+        assert f"last used with MAKER_PROMPT={cfg.maker_prompt}" in strategy_warning(store, other)
+    clock, taker = Clock(), Store(":memory:")
+    asyncio.run(dry_run(Config(), taker, BTC, books_at(clock, 1), model=StubModel(0.9),
+                        clock=clock))
+    assert not [e for e in taker.events() if e["kind"] == "maker_prompt"]
 KEY = "0x" + "11" * 32
 
 
