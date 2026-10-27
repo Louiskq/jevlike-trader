@@ -241,3 +241,32 @@ def test_kill_during_the_model_call_still_holds_killed_with_mainnet_on():
     assert reasons(store)[-1] == "killed"
     assert [c for c in fake.calls if c[0] == "order"] == []  # never quoted
     assert len(events(store, "mainnet_input")) == 1  # the prompt did carry the block
+
+
+# ---- the dashboard's view ----
+
+
+def test_maker_view_shows_the_mainnet_state():
+    tr, store, clock, model = make_paper(cfg=NCFG, model=Recorder())
+    v = tr.maker_view()["mainnet"]
+    assert v["state"] == "waiting" and v["mid"] is None and v["age_s"] is None
+    feed(tr, T0 - 100, T0)
+    tick(tr, clock, T0)
+    v = tr.maker_view()["mainnet"]
+    assert v["warmup_until"] == pytest.approx(T0 + 310) and v["gap_bps"] is None
+    feed(tr, T0 + 1, WARM)
+    tick(tr, clock, WARM)
+    v = tr.maker_view()["mainnet"]
+    assert v["warmup_until"] is None and v["state"] == "fresh" and v["mid"] == MMID
+    assert v["gap_bps"] == pytest.approx((65001.5 / MMID - 1) * 1e4) and v["age_s"] == 0.0
+    clock.t = WARM + 4.63
+    assert tr.maker_view()["mainnet"]["state"] == "fresh"
+    clock.t = WARM + 5.37
+    v = tr.maker_view()["mainnet"]
+    assert v["state"] == "stale" and v["age_s"] == pytest.approx(5.37)
+
+
+def test_maker_view_has_no_mainnet_with_the_standard_prompt():
+    tr, store, clock, model = make_paper(cfg=MCFG)
+    tick(tr, clock, T0)
+    assert tr.maker_view()["mainnet"] is None

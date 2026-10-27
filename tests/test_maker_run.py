@@ -464,3 +464,13 @@ def test_nothing_key_like_reaches_the_mainnet_history():
                              mainnet_books=main_books, on_trader=lambda t: box.update(tr=t)))
     state = repr(vars(tr.mainnet))
     assert KEY not in state and ADDR not in state and tr.mainnet.latest() is not None
+
+
+def test_summary_carries_the_mainnet_view():
+    from test_maker import make_paper
+    tr, store, clock, _ = make_paper(cfg=NCFG)
+    tr.mainnet.add(T0 - 0.4, 64990.0)
+    tick(tr, clock, T0)
+    live = trader_live(tr, clock)()
+    m = build_summary(store, live)["maker"]["mainnet"]
+    assert m["state"] == "fresh" and m["mid"] == 64990.0 and m["warmup_until"] == T0 + 310

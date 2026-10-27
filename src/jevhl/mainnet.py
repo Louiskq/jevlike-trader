@@ -88,6 +88,13 @@ class MainnetHistory:
         """(receive time, mid) of the newest mainnet book, None before the first."""
         return (self._ts[-1], self._mids[-1]) if self._ts else None
 
+    def state(self, now: float) -> str:
+        """For the dashboard: waiting (no book yet), fresh or stale (newest book over
+        MAINNET_MAX_AGE_S old at `now`)."""
+        if not self._ts:
+            return "waiting"
+        return "fresh" if now - self._ts[-1] <= MAINNET_MAX_AGE_S else "stale"
+
 
 def mainnet_input(now: float, testnet_mid: float,
                   at: Callable[[float], tuple[float | None, float]]) -> MainnetInput | None:

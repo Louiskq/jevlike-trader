@@ -728,4 +728,21 @@ class MakerTrader(Trader):
             "rate_paused_until": self.rate_paused_until if self.rate_paused_until > now else None,
             "budget": self.budget,
             "capped": self.capped,
+            "mainnet": self._mainnet_view(now),
+        }
+
+    def _mainnet_view(self, now: float) -> dict | None:
+        """MAKER_PROMPT=mainnet only: the newest mainnet book, the last decision's gap, and
+        the warm-up's end while it lasts."""
+        if self.mainnet is None:
+            return None
+        latest = self.mainnet.latest()
+        first = self._first_book_ts
+        warm = first + WARMUP_S if first is not None and now < first + WARMUP_S else None
+        return {
+            "state": self.mainnet.state(now),
+            "mid": latest[1] if latest else None,
+            "age_s": now - latest[0] if latest else None,
+            "gap_bps": self.last_mainnet.gap_bps if self.last_mainnet else None,
+            "warmup_until": warm,
         }

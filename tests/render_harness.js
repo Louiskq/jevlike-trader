@@ -36,12 +36,13 @@ vm.createContext(context);
 for (const f of ["logic.js", "app.js"]) vm.runInContext(fs.readFileSync(dir + "/" + f, "utf8"), context);
 function send(name, data) { handlers[name]({ data: JSON.stringify(data) }); }
 function dl(id) { const c = els[id].children; const o = []; for (let i = 0; i < c.length; i += 2) o.push([c[i].textContent, c[i + 1].textContent]); return o; }
+function dlCls(id) { const c = els[id].children; const o = {}; for (let i = 0; i < c.length; i += 2) o[c[i].textContent] = c[i + 1].className || ""; return o; }
 function rows(id) { return els[id]._body.children.map(tr => tr.children.map(td => td.textContent)); }
 function collect() {
   const out = { pnl: dl("pnl"), counts: dl("counts"), decision: dl("decision"), brier: rows("brier"),
     arcs: {}, notes: {}, texts: {},
     kill: [els["chip-kill"].textContent, els["chip-kill"].className],
-    maker: dl("maker"), makerHidden: els["maker-card"].hidden === true,
+    maker: dl("maker"), makerCls: dlCls("maker"), makerHidden: els["maker-card"].hidden === true,
     midTexts: els["mid-chart"].texts };
   IDS.filter(i => i.startsWith("rel-chart")).forEach(i => {
     out.arcs[i] = els[i].arcs; out.texts[i] = els[i].texts;

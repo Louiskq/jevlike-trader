@@ -102,7 +102,22 @@
         m.rate_paused_until ? "warn" : ""],
       ["Address budget", b && b.used !== null && b.used !== undefined ? b.used + " / " + b.cap : "n/a"],
       ["Capped", m.capped ? "yes (quote moved to the other side)" : "no", m.capped ? "warn" : ""],
-    ]);
+    ].concat(mainnetRows(m.mainnet)));
+  }
+
+  // MAKER_PROMPT=mainnet (milestone 10): mainnet's mid, the gap to it, and why it holds.
+  function mainnetRows(n) {
+    if (!n) return [];
+    var stale = n.state === "stale";
+    var state = n.warmup_until ? "warm-up until " + timeOf(n.warmup_until)
+      : n.state === "waiting" ? "waiting for the first mainnet book"
+      : stale ? "stale (no_mainnet holds, quote left as is)" : n.state;
+    return [
+      ["Mainnet", state, n.state === "fresh" && !n.warmup_until ? "" : "warn"],
+      ["Mainnet mid", fmt(n.mid, 2)],
+      ["Gap to mainnet", n.gap_bps === null || n.gap_bps === undefined ? "n/a" : signed(n.gap_bps, 2) + " bps"],
+      ["Mainnet age", n.age_s === null || n.age_s === undefined ? "n/a" : fmt(n.age_s, 1) + " s", stale ? "warn" : ""],
+    ];
   }
 
   function renderBrier(cal) {
