@@ -23,6 +23,14 @@ from .store import Store
 
 FEE_TOL = 1e-9  # float noise only; the exchange reports fees to ~6 decimals
 PNL_TOL = 1e-4  # dollars: closedPnl is rounded by the exchange, the ledger's is not
+# The exchange rounds each closing fill's closedPnl (the M10 live run: up to $0.000013 a fill,
+# $0.00018 over 203 fills), so the allowance grows with the closing fills, never below PNL_TOL.
+PNL_TOL_PER_CLOSE = 1e-5
+
+
+def pnl_tolerance(remote: list[dict]) -> float:
+    """Dollars the ledger's realized P&L may differ from the sum of the exchange's closedPnl."""
+    return max(PNL_TOL, PNL_TOL_PER_CLOSE * sum(1 for f in remote if f["closed_pnl"] != 0))
 
 
 def compare(
@@ -74,7 +82,7 @@ def run_reconcile(
     ledger, remote_ledger = Ledger.from_fills(local), Ledger.from_fills(remote)
     problems = compare(local, remote, ledger.position, remote_pos, 10.0 ** -meta.sz_decimals / 2)
     exchange_realized = sum(f["closed_pnl"] for f in remote)  # the exchange's own figure
-    if abs(ledger.realized - exchange_realized) > PNL_TOL:
+    if abs(ledger.realized - exchange_realized) > pnl_tolerance(remote):
         problems.append(
             f"realized P&L: ledger {ledger.realized:.6f} exchange closedPnl {exchange_realized:.6f}"
         )

@@ -100,6 +100,26 @@ def test_report_compares_exchange_closed_pnl_with_the_ledger_realized_pnl():
     assert not ok and "MISMATCH" in text and "realized P&L" in text
 
 
+def test_pnl_tolerance_grows_with_closing_fills_but_never_below_the_floor():
+    opening = {"closed_pnl": 0.0}
+    closing = {"closed_pnl": 0.0123}
+    assert rc.pnl_tolerance([]) == rc.PNL_TOL
+    assert rc.pnl_tolerance([opening] * 50 + [closing] * 5) == rc.PNL_TOL
+    assert rc.pnl_tolerance([opening] * 100 + [closing] * 100) == pytest.approx(1e-3)
+
+
+def test_report_allows_rounding_drift_within_the_tolerance_only():
+    fake = FakeHL()
+    store = _store_with(fake)  # one closing fill: the floor applies
+    pnl = float(fake.raw_fills[-1]["closedPnl"])
+    fake.raw_fills[-1]["closedPnl"] = str(pnl + 0.9 * rc.PNL_TOL)
+    text, ok = rc.run_reconcile(store, fake, ADDR, "BTC", BTC)
+    assert ok, text
+    fake.raw_fills[-1]["closedPnl"] = str(pnl + 1.1 * rc.PNL_TOL)
+    text, ok = rc.run_reconcile(store, fake, ADDR, "BTC", BTC)
+    assert not ok and "realized P&L" in text
+
+
 def test_report_flags_a_fill_the_store_never_saw():
     fake = FakeHL()
     store = _store_with(fake, n=1)  # the closing fill was never stored
