@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Can a jev-like model trade? Hyperliquid testnet results</title>
+<meta name="description" content="A bot lets a language model trade the BTC perpetual on the Hyperliquid testnet. The software works; the model has not been shown to have an edge.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf8;--fg:#1d1d1b;--mut:#6b6a66;--line:#dcdad4;--card:#fff;--acc:#b4442a}
+@media(prefers-color-scheme:dark){:root{--bg:#161614;--fg:#ecebe6;--mut:#9a988f;--line:#34332f;--card:#1e1e1b;--acc:#e8805f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:48px 20px 64px}
+.kicker{color:var(--mut);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin:0 0 8px}
+h1{font-size:2.2rem;line-height:1.15;margin:0 0 12px}
+h2{font-size:1.3rem;margin:40px 0 8px;padding-top:24px;border-top:1px solid var(--line)}
+.lede{font-size:1.1rem;color:var(--mut);margin:0 0 20px}
+.verdict{border-left:3px solid var(--acc);background:var(--card);padding:12px 16px;border-radius:0 6px 6px 0}
+table{width:100%;border-collapse:collapse;font-size:14px;margin:12px 0;background:var(--card)}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+td:not(:first-child){font-variant-numeric:tabular-nums}
+figure{margin:20px 0}
+img{max-width:100%;height:auto;border-radius:6px;background:#fff}
+figcaption,footer{color:var(--mut);font-size:13px}
+footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line)}
+code{font-size:.9em;background:var(--card);padding:1px 5px;border-radius:4px}
+@media(max-width:560px){table{font-size:13px}h1{font-size:1.8rem}}
+</style></head><body><main>
+<header>
+<p class="kicker">Hyperliquid testnet &middot; BTC perpetual &middot; Oct 2026</p>
+<h1>Can a jev-like model trade?</h1>
+<p class="lede">A bot lets a language model forecast the BTC perpetual's next 60 seconds and trade on it, on the Hyperliquid <em>testnet</em>. I then tried to make the model better with a fine-tune. This page is the evidence, computed from the bot's own logs.</p>
+<div class="verdict"><strong>Short answer.</strong> The software works. The model has not been shown to have an edge, live. No run made money after fees.</div>
+</header>
+
+<section>
+<h2>Did the software work?</h2>
+<p>Yes. It was judged first, as the project set out.</p>
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Reconciliation with the exchange</td><td>Every live run agreed on fills, fees and position. closedPnl agreed too, except the last run, $0.00018 off over 203 fills (the exchange rounds each closing fill).</td></tr>
+<tr><td>Safety drills</td><td>Loss-limit kill, short decider deadline (24/24 late holds, 0 fills) and maker cancel-on-kill worked live. Flatten retry and stale-feed resume were tested in code only.</td></tr>
+<tr><td>Unattended</td><td>2 hours on a VM, 0 error events. Memory +0.45&nbsp;MB/h, not levelled off. Not overnight.</td></tr>
+<tr><td>Latency</td><td>Model p50 41&nbsp;ms, p99 289&nbsp;ms, 0 late of 1,365 decisions (taker, VM).</td></tr>
+<tr><td>Tests</td><td>1,007, with an independent review and planted-bug checks on every milestone.</td></tr>
+</table>
+</section>
+
+<section>
+<h2>Was the model any good?</h2>
+<p>Judged on calibration (Brier score against a running base rate), not P&amp;L. Positive means <em>worse</em> than the base rate. Every interval includes zero: the data cannot say either way.</p>
+<table>
+<tr><th>Run</th><th>Model</th><th>60&nbsp;s Brier minus base [95%]</th><th>60&nbsp;s AUC [95%]</th></tr>
+<tr><td>R3+R6 pooled</td><td>original</td><td>+0.0271 [&minus;0.0155, +0.0653]</td><td>&ndash;</td></tr>
+<tr><td>R6, 1&nbsp;h maker</td><td>original</td><td>+0.0278 [&minus;0.0441, +0.0934]</td><td>0.647 [0.509, 0.776]</td></tr>
+<tr><td>R7, 1&nbsp;h maker</td><td>original</td><td>+0.0168 [&minus;0.0329, +0.0512]</td><td>0.568 [0.450, 0.683]</td></tr>
+<tr><td>Fine-tuned run, 1&nbsp;h maker</td><td><strong>fine-tuned</strong></td><td>+0.0377 [&minus;0.0305, +0.1077]</td><td>0.614 [0.492, 0.736]</td></tr>
+</table>
+<p>The model tended to lean down (mean forecast 0.35&ndash;0.42 up) while the price rose 51&ndash;55% of the time in two of the runs. The one repeated hint is ranking at 30&nbsp;s (AUC 0.686 then 0.601), better than chance but not better calibrated. Consecutive decisions overlap, so the real sample is much smaller than the decision counts.</p>
+<figure><img src="img/reliability_pooled.png" alt="Reliability curve pooled over runs R3 and R6"><figcaption>Reliability, R3 + R6 pooled. A calibrated model sits on the diagonal.</figcaption></figure>
+</section>
+
+<section>
+<h2>The fine-tune</h2>
+<p>After the live runs showed no skill, I checked whether a better model was even possible before spending GPU time.</p>
+<ol>
+<li><strong>Feasibility.</strong> 67 hours of mainnet and testnet order books. Simple models on the prompt's own features predict the testnet 60&nbsp;s move (AUC 0.619), and better with mainnet prices added (AUC 0.666). That suggests testnet <em>follows</em> mainnet: learnable, but a testnet artefact. At 900&nbsp;s, nothing.</li>
+<li><strong>Fine-tune.</strong> A LoRA on the 9B decider with mainnet prices in the prompt. On 8,782 held-out decisions:</li>
+</ol>
+<table>
+<tr><th>Forecaster</th><th>Brier</th><th>Brier minus base [95%]</th><th>AUC</th></tr>
+<tr><td>Current decider</td><td>0.2800</td><td>+0.0302 [+0.0219, +0.0385]</td><td>0.557</td></tr>
+<tr><td>Current, recalibrated</td><td>0.2486</td><td>&minus;0.0013 [&minus;0.0023, &minus;0.0003]</td><td>0.550</td></tr>
+<tr><td><strong>Fine-tuned</strong></td><td><strong>0.2243</strong></td><td><strong>&minus;0.0256 [&minus;0.0307, &minus;0.0205]</strong></td><td><strong>0.677</strong></td></tr>
+</table>
+<p>Offline, clearly better, even than the recalibrated original.</p>
+<ol start="3">
+<li><strong>Live test.</strong> One hour on the testnet maker. <strong>It did not reproduce the offline gain</strong> (table above). Caveats: the model link dropped 45 minutes in, so 2,359 decisions carry a forecast; and testnet traded about 42&nbsp;bps <em>below</em> mainnet that hour where the training data had it about 40&nbsp;bps <em>above</em>, putting the model's strongest input outside its training range. One hour cannot show that is the cause.</li>
+</ol>
+</section>
+
+<section>
+<h2>Money</h2>
+<table>
+<tr><th>Runs</th><th>Fills</th><th>Before fees</th><th>Fees</th><th>After fees</th></tr>
+<tr><td>R1&ndash;R6</td><td>319</td><td>&minus;$0.19</td><td>$1.40</td><td><strong>&minus;$1.59</strong></td></tr>
+<tr><td>R7</td><td>57</td><td></td><td>$0.09</td><td>&minus;$0.10</td></tr>
+<tr><td>Fine-tuned run</td><td>203</td><td>+$0.06</td><td>$0.32</td><td>&minus;$0.26</td></tr>
+</table>
+<p>Minimum size, on testnet. A taker round trip costs 9&nbsp;bps against a median 60&nbsp;s move of 0.7&nbsp;bps. The maker's spread is smaller than its own fee. It trades and reconciles; it does not make money on BTC.</p>
+</section>
+
+<section>
+<h2>What didn't work</h2>
+<ul>
+<li>A stale feed stopped the first real-model run after 2 hours. Fixed with a pause and resume, never drilled live.</li>
+<li>A network loss left a small short open. Fixed with a flatten retry, never drilled live.</li>
+<li>The first live maker run died in 14 minutes: Hyperliquid refuses a side-changing modify, and the test venues accepted it. Fixed as cancel plus new order.</li>
+<li>Most live runs finished with the model below the base rate, and the confident forecasts were not better than the rest.</li>
+<li>The fine-tune's offline gain did not show up in one live hour.</li>
+</ul>
+<p>Review caught dozens of bugs before they reached a run, including a kill switch disabled by <code>nan</code> and a dashboard that distorted the latency table.</p>
+</section>
+
+<section>
+<h2>How it was built</h2>
+<p>With Claude Code through a staged pipeline: I wrote the problem and made the decision at each gate; Claude wrote the code. Ten milestones, each reviewed by an independent agent that never saw the builder's context, with planted bugs the tests had to catch. About 12.5 GPU-hours in total. Trading is testnet only, with one read-only exception: the fine-tuned model reads mainnet's public price book.</p>
+</section>
+
+<footer>Numbers are computed from the bot's own SQLite logs and the study scripts. Testnet only; no real money.</footer>
+</main></body></html>
