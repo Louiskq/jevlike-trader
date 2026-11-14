@@ -4,6 +4,8 @@ A bot that lets a jev-like model trade the BTC on the **Hyperliquid testnet**, a
 
 **Short answer: the software works, the model has not been shown to have an edge, and no run made money after fees.**
 
+Results write-up: https://jevlike-trader.vercel.app
+
 Trading is testnet only
 
 The model reads the live order book and gives a probability the price rises over the next 60 s. The bot trades on it as a **taker** (marketable orders, closed after 60 s) or a **maker** (one post-only quote a second). It has a kill switch (loss limit, order errors, stale book), books P&L only from exchange fills, and scores every decision against a base rate. A local dashboard shows it live.
