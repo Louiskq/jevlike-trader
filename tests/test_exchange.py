@@ -461,15 +461,22 @@ def test_a_bad_key_error_never_contains_the_key():
     assert e.value.__suppress_context__
 
 
-def test_the_wrapper_exposes_no_transfer_or_withdrawal_and_no_mainnet_url():
+def test_the_wrapper_exposes_no_transfer_or_withdrawal_and_mainnet_only_in_the_reader():
     forbidden = ("transfer", "withdraw", "send_asset", "approve_agent", "sub_account")
     for name in dir(Exchange):
         assert not any(w in name for w in forbidden), name
     src = Path(exchange_mod.__file__).parent
     for py in src.glob("*.py"):
         text = py.read_text()
-        assert "api.hyperliquid.xyz" not in text, py.name
-        assert "MAINNET" not in text, py.name
+        if py.name == "mainnet.py":  # milestone 10: the read-only reader (tests/test_mainnet.py)
+            assert text.count("hyperliquid.xyz") == 1
+            assert '"https://api.hyperliquid.xyz/info"' in text
+        else:
+            assert "hyperliquid.xyz" not in text, py.name  # no mainnet https or wss URL
+        assert "MAINNET_API_URL" not in text, py.name  # the SDK's mainnet constant
+        # milestone 10: the mainnet block's wording and its mainnet-only module
+        if py.name not in ("prompt.py", "mainnet.py"):
+            assert "MAINNET" not in text, py.name
         for w in ("usd_transfer", "withdraw_from_bridge", "send_asset", "usd_class_transfer",
                   "spot_transfer", "approve_agent", "vault_usd_transfer"):
             assert w not in text, (py.name, w)

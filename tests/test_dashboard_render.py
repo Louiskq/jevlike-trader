@@ -170,3 +170,46 @@ def test_mid_chart_marks_the_resting_quote():
     assert "quote buy 65001.00" in render(s)["midTexts"]
     s = {**snap(summary()), "decisions": decisions}
     assert not any(t.startswith("quote") for t in render(s)["midTexts"])
+
+
+# ---- mainnet prompt (milestone 10) ----
+
+
+def mainnet(**kw):
+    m = {"state": "fresh", "mid": 64990.0, "age_s": 0.73, "gap_bps": 1.7695,
+         "warmup_until": None}
+    m.update(kw)
+    return m
+
+
+def test_maker_panel_shows_mainnet_mid_gap_and_age():
+    out = render(snap(summary(maker=maker(mainnet=mainnet()))))
+    rows = dict(out["maker"])
+    assert rows["Mainnet"] == "fresh"
+    assert rows["Mainnet mid"] == "64990.00"
+    assert rows["Gap to mainnet"] == "+1.77 bps"
+    assert rows["Mainnet age"] == "0.7 s"
+    assert out["makerCls"]["Mainnet"] == "" and out["makerCls"]["Mainnet age"] == ""
+    neg = dict(render(snap(summary(maker=maker(mainnet=mainnet(gap_bps=-3.2)))))["maker"])
+    assert neg["Gap to mainnet"] == "-3.20 bps"
+
+
+def test_maker_panel_has_no_mainnet_rows_with_the_standard_prompt():
+    for m in (maker(), maker(mainnet=None)):
+        labels = [k for k, _ in render(snap(summary(maker=m)))["maker"]]
+        assert not [k for k in labels if "ainnet" in k], labels
+
+
+def test_maker_panel_marks_stale_mainnet_and_warmup():
+    out = render(snap(summary(maker=maker(mainnet=mainnet(state="stale", age_s=7.3)))))
+    rows = dict(out["maker"])
+    assert rows["Mainnet"].startswith("stale") and "no_mainnet" in rows["Mainnet"]
+    assert out["makerCls"]["Mainnet"] == "warn" and out["makerCls"]["Mainnet age"] == "warn"
+    out = render(snap(summary(maker=maker(mainnet=mainnet(warmup_until=1.0)))))
+    assert dict(out["maker"])["Mainnet"].startswith("warm-up until ")
+    assert out["makerCls"]["Mainnet"] == "warn"
+    out = render(snap(summary(maker=maker(mainnet=mainnet(state="waiting", mid=None,
+                                                          age_s=None, gap_bps=None)))))
+    rows = dict(out["maker"])
+    assert rows["Mainnet"].startswith("waiting") and rows["Mainnet mid"] == "n/a"
+    assert rows["Gap to mainnet"] == "n/a" and rows["Mainnet age"] == "n/a"

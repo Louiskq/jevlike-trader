@@ -9,7 +9,8 @@ with a full snapshot, so a reconnect or a restart reloads history from SQLite.
 `live`, if given, is a callable returning
 {"mid": float | None, "feed": str, "kill_reason": str | None, "stopped": bool,
 "paused": bool}, plus "maker" (MakerTrader.maker_view(): the resting quote, the action
-counter) when the maker strategy runs.
+counter, and with MAKER_PROMPT=mainnet the mainnet mid, gap and age) when the maker strategy
+runs.
 """
 
 from __future__ import annotations

@@ -61,3 +61,31 @@ the `events` table (`kind = 'rss'`, detail in kB), so the series survives a cras
 A hold rate of exactly 0% or 100% over 50 or more decisions prints a `WARNING: hold rate
 stuck` line; either means the model or the gate is not doing what you think (for example a
 dead tunnel gives 100% holds).
+
+## The fine-tuned decider (milestone 10)
+
+The fine-tuned decider was trained on the maker prompt plus a mainnet block (mainnet BTC mid,
+this market's gap to it, mainnet mid change over 5, 15 and 60 s). Run it with the maker and
+`MAKER_PROMPT=mainnet`:
+
+```
+STRATEGY=maker MAKER_PROMPT=mainnet MODEL=decider DECIDER_URL=http://127.0.0.1:8000 \
+  uv run python -m jevhl.run --db maker_ft.db --seconds 3600 --dashboard
+```
+
+- Serve the fine-tuned model at temperature 1.0 (it was trained with cross-entropy at T = 1).
+  That is a server setting; the bot's `/decide` contract is unchanged.
+- The bot then also reads mainnet's public BTC order book about once a second, read-only (no
+  key, no signing; `src/jevhl/mainnet.py`). `MAKER_PROMPT=mainnet` needs `COIN=BTC`. The taker
+  ignores the setting.
+- The first 310 s of a run are `warmup` holds: training skipped each recording's first 310 s,
+  so the model never saw a prompt with less history.
+- A decision without a mainnet book under 5 s old is a `no_mainnet` hold: no model call, the
+  resting quote is left as it is, and it is not a kill. `mainnet_stale` and `mainnet_fresh`
+  events mark each spell; the dashboard's maker card shows mainnet's mid, the gap and its age.
+- Each decision whose prompt carried the block has a `mainnet_input` event:
+  `SELECT json_extract(detail, '$.decision_id'), json_extract(detail, '$.gap_bps')
+  FROM events WHERE kind = 'mainnet_input'`.
+- The mainnet wording in `src/jevhl/prompt.py` is what the model was trained on: change it, or
+  the maker wording, only together with a new fine-tune (`tests/test_mainnet_prompt.py` fails
+  when the prompt drifts).

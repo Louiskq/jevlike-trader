@@ -13,6 +13,7 @@ _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MODELS = ("mock", "decider")
 STRATEGIES = ("taker", "maker")
+MAKER_PROMPTS = ("standard", "mainnet")
 
 
 class ConfigError(ValueError):
@@ -95,6 +96,9 @@ class Config:
     strategy: str = "taker"
     maker_size_usd: float = 11.0
     maker_deadline_s: float = 1.0
+    # MAKER_PROMPT=mainnet (milestone 10): the maker prompt gains the mainnet block and the
+    # bot reads mainnet's public BTC book (read-only, jevhl.mainnet) for it.
+    maker_prompt: str = "standard"
     decider_url: str | None = None
     api_key: str | None = field(default=None, repr=False)
     # The MAIN account's public address (not the API wallet's): the API wallet only signs, and
@@ -115,7 +119,8 @@ class Config:
         maker = {}  # read (and checked) only for the maker: a leftover value never stops the taker
         if strategy == "maker":
             maker = {"maker_size_usd": _num(env, "MAKER_SIZE_USD", 11.0),
-                     "maker_deadline_s": _num(env, "MAKER_DECIDER_DEADLINE_S", 1.0)}
+                     "maker_deadline_s": _num(env, "MAKER_DECIDER_DEADLINE_S", 1.0),
+                     "maker_prompt": env.get("MAKER_PROMPT") or "standard"}
         cfg = cls(
             network=network,
             model=model,
@@ -144,6 +149,11 @@ class Config:
     def decision_deadline_s(self) -> float:
         """The model's deadline for this strategy (the maker decides about once a second)."""
         return self.maker_deadline_s if self.strategy == "maker" else self.deadline_s
+
+    @property
+    def mainnet_prompt(self) -> bool:
+        """The maker with MAKER_PROMPT=mainnet: the mainnet block and reader are on."""
+        return self.strategy == "maker" and self.maker_prompt == "mainnet"
 
     def validate(self) -> None:
         if self.account_address is not None and not _ADDRESS.fullmatch(self.account_address):
@@ -188,3 +198,9 @@ class Config:
             if not self.min_notional_usd <= self.maker_size_usd <= self.max_position_usd:
                 raise ConfigError("MAKER_SIZE_USD must be between the minimum notional and "
                                   "MAX_POSITION_USD")
+            if self.maker_prompt not in MAKER_PROMPTS:
+                raise ConfigError(f"MAKER_PROMPT must be one of {MAKER_PROMPTS}, "
+                                  f"got {self.maker_prompt!r}")
+            if self.maker_prompt == "mainnet" and self.coin != "BTC":
+                raise ConfigError("MAKER_PROMPT=mainnet needs COIN=BTC (the mainnet block "
+                                  "shows mainnet BTC)")

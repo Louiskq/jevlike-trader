@@ -28,12 +28,18 @@ on tid), the kill switch, the M6 flatten retry and the M7 stale pause. The maker
 - paper, the resting quote fills from trade prints that go through its price;
 - calibration scores a decision only when the book it saw differs from the last scored one.
 No time exits: the position is reduced by quoting the other side.
+
+With MAKER_PROMPT=mainnet (milestone 10) the model's input also carries mainnet prices
+(jevhl.mainnet), as the fine-tuned decider was trained. The first 310 s after the run's first
+book are `warmup` holds, and a decision without a fresh mainnet price is a `no_mainnet` hold:
+no model call and the resting quote left as it is, as for a late answer. Neither is a kill.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
@@ -42,6 +48,7 @@ from decimal import Decimal
 from .exchange import RateLimited
 from .feed import Book, Print, TradeTape
 from .latency import percentile
+from .mainnet import WARMUP_S, MainnetHistory, mainnet_input
 from .policy import MAKER_GATE, hold, maker_side
 from .prompt import (
     DEPTH_BANDS_BPS,
@@ -54,7 +61,7 @@ from .prompt import (
 )
 from .rounding import AssetMeta, maker_price, order_size
 from .trader import Trader
-from .types import HORIZONS_S, Action, Decision, MakerInput, ModelInput, QuoteAck
+from .types import HORIZONS_S, Action, Decision, MainnetInput, MakerInput, ModelInput, QuoteAck
 
 MAKER_ACTIONS_PER_MIN = 20  # SPEC hard constraint, not configurable
 STOP_RESERVE = 2  # slots quotes and stray cancels leave free: a stop's cancel and its close
@@ -152,9 +159,20 @@ def without_own(book: Book, quote, meta: AssetMeta) -> Book | None:
 
 
 class MakerTrader(Trader):
-    def __init__(self, *args, tape: TradeTape | None = None, **kwargs):
+    def __init__(self, *args, tape: TradeTape | None = None,
+                 mainnet: MainnetHistory | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.tape = tape if tape is not None else TradeTape()
+        # MAKER_PROMPT=mainnet only (a history passed with the standard prompt is not used);
+        # run.dry_run feeds it from the mainnet reader
+        self.mainnet: MainnetHistory | None = None
+        if self.cfg.mainnet_prompt:
+            self.mainnet = mainnet if mainnet is not None else MainnetHistory()
+        self.last_mainnet: MainnetInput | None = None  # the last decision's, for the dashboard
+        self._first_book_ts: float | None = None  # the warm-up counts from the run's first book
+        self._stale_since: float | None = None  # start of the current no_mainnet spell
+        self._stale_holds = 0
+        self.mainnet_stale_spells = 0
         self._tape_cursor = 0
         self._quote: Quote | str | None = None
         self._actions: list[float] = []  # order actions sent, for the per-minute cap
@@ -193,6 +211,11 @@ class MakerTrader(Trader):
 
     async def on_book(self, book: Book) -> None:
         if not self.stopped:
+            if self._first_book_ts is None:
+                self._first_book_ts = book.recv_ts
+                if self.mainnet is not None:
+                    self.store.log_event(self._clock(), "mainnet_warmup",
+                                         f"holding until {WARMUP_S:g} s after the first book")
             if self._book_limited is not None:
                 e, self._book_limited = self._book_limited, None
                 async with self._lock:
@@ -288,18 +311,58 @@ class MakerTrader(Trader):
         if self._clock() < self.rate_paused_until:
             self.store.insert_decision(hold("rate_paused", ts=ts, gate=self._gate), seen.mid)
             return
+        mi = None
+        if self.mainnet is not None:
+            first = ts if self._first_book_ts is None else self._first_book_ts
+            if ts - first < WARMUP_S:
+                self.store.insert_decision(hold("warmup", ts=ts, gate=self._gate), seen.mid)
+                return
+            mi = mainnet_input(ts, seen.mid, self.mainnet.at)
+            self._note_mainnet(ts, mi is not None)
+            if mi is None:  # the model never saw a prompt without fresh mainnet prices
+                self.store.insert_decision(hold("no_mainnet", ts=ts, gate=self._gate), seen.mid)
+                return
         inp = build_input(seen, list(self._mids), self.tape, list(self._recent), cfg.horizon_s)
+        if mi is not None:
+            inp = replace(inp, mainnet=mi)
         d = await self._ask(inp, ts)
         if self.stopped or self._kill.tripped:  # tripped while the model was thinking
             d = hold("killed", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
         elif self._paused:
             d = hold("paused", ts=ts, gate=self._gate, p_up=d.p_up, latency_ms=d.latency_ms)
         decision_id = self.store.insert_decision(d, seen.mid)
+        if mi is not None:
+            self._record_mainnet(decision_id, ts, mi)
         self._mark_scored(decision_id, d, seen)
         self.capped = d.reason == "capped"
         if d.action is Action.HOLD:  # late or invalid: the resting quote stays as it is
             return
         await self._quote_to(book, d.action.value, decision_id)
+
+    def _note_mainnet(self, ts: float, fresh: bool) -> None:
+        """Log a no_mainnet spell once when it starts and once when it ends (not every hold)."""
+        if not fresh:
+            if self._stale_since is None:
+                self._stale_since, self._stale_holds = ts, 0
+                self.mainnet_stale_spells += 1
+                age = self.mainnet.at(ts)[1]
+                why = ("no mainnet book yet" if not math.isfinite(age)
+                       else f"latest mainnet book {age:.1f} s old")
+                self.store.log_event(self._clock(), "mainnet_stale", why)
+            self._stale_holds += 1
+        elif self._stale_since is not None:
+            self.store.log_event(self._clock(), "mainnet_fresh",
+                                 f"after {ts - self._stale_since:.1f} s, "
+                                 f"{self._stale_holds} no_mainnet holds")
+            self._stale_since = None
+
+    def _record_mainnet(self, decision_id: int, ts: float, mi: MainnetInput) -> None:
+        """The mainnet numbers a decision's prompt carried, queryable by decision id."""
+        self.last_mainnet = mi
+        detail = {"decision_id": decision_id, "mid": mi.mid, "gap_bps": mi.gap_bps,
+                  "age_s": self.mainnet.at(ts)[1],
+                  "returns_bps": {str(w): r for w, r in mi.returns_bps.items()}}
+        self.store.log_event(self._clock(), "mainnet_input", json.dumps(detail, allow_nan=False))
 
     def _blocked(self) -> bool:
         return (self.stopped or self._kill.tripped or self._paused
@@ -665,4 +728,21 @@ class MakerTrader(Trader):
             "rate_paused_until": self.rate_paused_until if self.rate_paused_until > now else None,
             "budget": self.budget,
             "capped": self.capped,
+            "mainnet": self._mainnet_view(now),
+        }
+
+    def _mainnet_view(self, now: float) -> dict | None:
+        """MAKER_PROMPT=mainnet only: the newest mainnet book, the last decision's gap, and
+        the warm-up's end while it lasts."""
+        if self.mainnet is None:
+            return None
+        latest = self.mainnet.latest()
+        first = self._first_book_ts
+        warm = first + WARMUP_S if first is not None and now < first + WARMUP_S else None
+        return {
+            "state": self.mainnet.state(now),
+            "mid": latest[1] if latest else None,
+            "age_s": now - latest[0] if latest else None,
+            "gap_bps": self.last_mainnet.gap_bps if self.last_mainnet else None,
+            "warmup_until": warm,
         }

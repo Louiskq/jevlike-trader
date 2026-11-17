@@ -1,7 +1,8 @@
 """Hyperliquid testnet market data: l2Book parsing and a reconnecting WebSocket stream; for
 the maker (milestone 8) also a REST l2Book poller, the WS trades channel and a trade tape.
 
-Testnet only: there is no mainnet URL in this code base.
+Testnet only for trading: every URL here is testnet's. The bot's one mainnet URL is in
+mainnet.py, which reads mainnet's public BTC book read-only (milestone 10) through poll_books.
 """
 
 from __future__ import annotations

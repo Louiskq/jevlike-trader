@@ -29,7 +29,8 @@ wandb/
 *.db-shm
 *.sqlite*
 data/
-logs/
+!site/data/
+!site/data/logs/
 *.log
 
 # os / editor

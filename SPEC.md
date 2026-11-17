@@ -18,7 +18,7 @@ A model reads a live Hyperliquid order book on a fixed cadence and outputs a pro
 | Calibration label | Sign of mid change over each horizon (30 s, 60 s, 300 s); ties dropped per horizon. Every decision is scored, traded or not. The headline Brier and reliability curve use 60 s; 30 s and 300 s are shown alongside |
 | Storage | SQLite (stdlib) |
 | Dashboard | FastAPI + SSE + static page, bound to 127.0.0.1 only |
-| Network | Testnet only. There is no mainnet code path: `NETWORK=mainnet` is rejected (user will not trade real money) |
+| Network | Testnet only for trading. There is no mainnet trading path: `NETWORK=mainnet` is rejected (user will not trade real money). One read-only exception from milestone 10 (user decision 2026-10-26): with `MAKER_PROMPT=mainnet` the maker reads mainnet's public BTC order book, because the fine-tuned decider was trained with mainnet prices in its prompt |
 | Limits | Defaults $500 max position, $100 max daily loss; both configurable via env, no hard ceiling |
 
 **Assumptions I added (not your decisions; check them):**
@@ -60,7 +60,7 @@ Dashboard shows: live mid and markers, current decision (`p_up`, action, gate, s
 
 ## Hard constraints
 
-- Testnet only. Config rejects any network other than testnet; no mainnet code, URLs or confirmation flow exist. Position and daily-loss limits default to $500 / $100 and are configurable.
+- Testnet only for trading. Config rejects any network other than testnet; no mainnet trading code or confirmation flow exists. The only mainnet URL is the public info endpoint, used read-only (unauthenticated `l2Book` requests) by one module that imports nothing from the exchange code and never sees a key (milestone 10); a test enforces this. Position and daily-loss limits default to $500 / $100 and are configurable.
 - API (agent) wallet key only. Key only from `.env`, which is in `.gitignore` before it exists. Never logged, never committed. No withdrawal or transfer code anywhere.
 - Kill switch on max daily loss, 3 consecutive order errors, or stale book: cancel all, flatten with reduce-only, show on dashboard. Daily-loss and order-error kills stop the bot for good. A stale-book kill instead pauses it (no new orders, feed still read) and it may resume once books have arrived continuously for a settling period (default 60 s) and no flatten is unresolved; at most 5 such resumes per run, after which the next stale kill is permanent. Every pause, resume and give-up is logged and shown. Also flatten on clean shutdown.
 - Signing and orders only through the SDK. Price and size rounded to exchange rules (tick, lot, significant figures), and tested.
@@ -90,6 +90,23 @@ Acceptance: dashboard loads from 127.0.0.1 only, streams decisions and fills, sh
 Goal: real testnet orders with the mock at minimum size. `exchange` wrapper (place IOC, reduce-only close, cancel-all, flatten, fills and fees), `ledger` driven by confirmations, kill switch wired to flatten. User creates testnet account and API wallet themselves (guided).
 Acceptance: an hour of live testnet trading; fills, position, fees and P&L match the Hyperliquid testnet UI exactly (reconciliation script plus user's check); low daily-loss limit fires kill switch and flattens; wifi-off drill holds and never trades on stale data; very short decider deadline logs late holds.
 
+### Fine-tuned decider (milestone 10, decided 2026-10-26)
+
+| Topic | Decision |
+|---|---|
+| Goal | A decider that is better than the current one at the bot's question: better calibration and ranking, not P&L (user: "i dont want making money after costs, i just want it to be better than it currenty is") |
+| Model | decider9b_full plus a LoRA fine-tune (rank 64) on 26,364 testnet rows rendered with the bot's own maker prompt (`study/`); held-out result in `study/results/finetune.md`. Served with the same `/decide` contract |
+| Prompt | The maker prompt plus a mainnet block just before the question: mainnet BTC mid, this market's gap to it in bps, mainnet mid change over 5, 15 and 60 s. The wording is exactly as in training (`study/finetune_data.py`); it is the assistant's draft, like the rest of the maker prompt |
+| Mainnet data | Read-only: mainnet's public BTC `l2Book` (info endpoint, no key, no signing) about once a second, only when the mainnet prompt is on |
+| Live use | "use it live" (user, 2026-10-26): a live testnet maker run with the fine-tuned model |
+
+**Assumptions I added for milestone 10 (not your decisions; check them):**
+- `MAKER_PROMPT=mainnet` turns the block and the mainnet reader on; the default (`MAKER_PROMPT=standard`) is today's prompt with no mainnet requests, so the current decider keeps working unchanged. The taker is unaffected.
+- When the latest mainnet book is older than 5 s (or missing), the decision is a hold (new reason `no_mainnet`) and the resting quote is left as it is, as for a late answer: the model never saw a prompt without fresh mainnet prices.
+- A mainnet outage is not a kill-switch trigger (it never touches orders); it is logged and shown.
+- Warm-up (user decision 2026-10-26): with `MAKER_PROMPT=mainnet`, the first 310 s after the run's first testnet book are holds (reason `warmup`, no model call, no quote), because training skipped each recording's first 310 s and the model never saw a prompt without 5 minutes of history. The standard prompt is unaffected.
+- The fine-tuned model is served at temperature 1.0 (it was trained with cross-entropy at T = 1); serving is outside this repository.
+
 ### Milestone 5: Decider backend and soak
 Goal: `MODEL=decider` over HTTP against `DECIDER_URL`; contract confirmed with the user then. Unattended run of at least 2 hours (user decision 2026-10-10: an overnight run is not needed for now).
 Acceptance: backend tested against a mocked server (success and timeout); a 2-hour unattended run with no crash and no growing memory; hold rate not stuck at 0% or 100%.
@@ -100,6 +117,10 @@ Acceptance: backend tested against a mocked server (success and timeout); a 2-ho
 Goal: `STRATEGY=maker` as decided above: REST book poll and trades feed, the richer prompt (draft for the user), post-only quotes one tick inside the touch replaced only on change, paper maker fills from real prints, dashboard and reconcile working for resting orders and maker fees.
 Acceptance: tests for quote pricing (inside the touch, one-tick spread), replace-only-on-change, cap forcing the other side, post-only rejection, partial fills, cancel-all on stale, kill and shutdown, the order-action cap; a 30-minute maker dry run with no errors; a 1-hour live testnet maker run at minimum size whose fills reconcile with the exchange, with resting orders visible in the testnet UI and the kill switch cancelling them.
 
+### Milestone 10: Fine-tuned decider live
+Goal: as decided above: the read-only mainnet reader, the mainnet block in the maker prompt behind `MAKER_PROMPT=mainnet`, holds on stale mainnet data, and the mainnet mid and gap recorded and shown.
+Acceptance: tests that the bot's prompt equals the training renderer's output for the same inputs; that the mainnet reader is read-only and isolated (no imports of exchange code or keys, info endpoint only, `l2Book` only); that `MAKER_PROMPT=standard` sends today's prompt and makes no mainnet request; stale or missing mainnet data gives a `no_mainnet` hold that leaves the quote alone; the taker unchanged. A 1-hour live testnet maker run with the fine-tuned model whose fills reconcile with the exchange, with calibration reported against R6 and R7.
+
 ## Out of scope
 
-Mainnet (any use); withdrawals or transfers; multiple markets at once; public deployment of the dashboard; backtesting; training the decider.
+Mainnet trading, or any mainnet request that needs a key (reading mainnet's public order book is allowed from milestone 10); withdrawals or transfers; multiple markets at once; public deployment of the dashboard; backtesting; training the decider inside the bot (the fine-tune of 2026-10-26 was done separately, in `study/`).

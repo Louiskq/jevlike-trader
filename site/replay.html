@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Replay: one hour of the bot trading, with the model's forecasts</title>
+<meta name="description" content="Replay three recorded one-hour testnet runs: price, the model's forecast, fills, and how the forecasts scored as the hour went on.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf8;--fg:#1d1d1b;--mut:#6b6a66;--line:#dcdad4;--card:#fff;--acc:#b4442a;
+  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--grid:#e6e4de;--shade:rgba(120,120,110,.10)}
+@media(prefers-color-scheme:dark){:root{--bg:#161614;--fg:#ecebe6;--mut:#9a988f;--line:#34332f;--card:#1e1e1b;--acc:#e8805f;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;--grid:#2b2a27;--shade:rgba(200,200,190,.07)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:920px;margin:0 auto;padding:36px 20px 64px}
+a{color:var(--fg)}
+.kicker{color:var(--mut);font-size:13px;letter-spacing:.04em;text-transform:uppercase;margin:0 0 6px}
+h1{font-size:1.9rem;line-height:1.15;margin:0 0 8px}
+.lede{color:var(--mut);margin:0 0 20px;max-width:680px}
+.bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:0 0 14px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:6px 12px;font-size:14px;border-right:1px solid var(--line);background:var(--card)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed=true]{background:var(--fg);color:var(--bg)}
+.seg button:focus-visible,.play:focus-visible,select:focus-visible,input[type=range]:focus-visible{outline:2px solid var(--s1);outline-offset:2px}
+.play{all:unset;cursor:pointer;padding:6px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);font-size:14px;font-weight:600}
+select{font:inherit;font-size:14px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+.clock{font-variant-numeric:tabular-nums;color:var(--mut);font-size:14px;margin-left:auto}
+.desc{color:var(--mut);font-size:14px;margin:0 0 10px}
+.chart{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 6px 4px}
+svg{display:block;width:100%;height:auto;touch-action:pan-y}
+svg text{font-size:11px;fill:var(--mut);font-family:inherit}
+.t-s1{fill:var(--s1)!important}.t-s2{fill:var(--s2)!important}.t-s3{fill:var(--s3)!important}
+.grid{stroke:var(--grid);stroke-width:1}
+.axis{stroke:var(--line);stroke-width:1}
+.ref{stroke:var(--mut);stroke-width:1;stroke-dasharray:3 3;opacity:.6}
+.l1{fill:none;stroke:var(--s1);stroke-width:2;stroke-linejoin:round}
+.l2{fill:none;stroke:var(--s2);stroke-width:2;stroke-linejoin:round}
+.l3{fill:none;stroke:var(--s3);stroke-width:1.5;stroke-linejoin:round}
+.ghost{opacity:.2}
+.mk{fill:var(--fg);stroke:var(--card);stroke-width:2;paint-order:stroke}
+.hair{stroke:var(--mut);stroke-width:1}
+.head{stroke:var(--fg);stroke-width:1.5}
+.shade{fill:var(--shade)}
+.tip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.45;box-shadow:0 4px 14px rgba(0,0,0,.12);min-width:190px;display:none;z-index:2}
+.tip b{font-variant-numeric:tabular-nums}
+.tip .k{display:inline-block;width:14px;height:0;border-top:2.5px solid;vertical-align:middle;margin-right:6px}
+.tip .sub{color:var(--mut)}
+input[type=range]{width:100%;margin:14px 0 4px;accent-color:var(--fg)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:14px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card .n{font-size:1.5rem;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.2}
+.card .l{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+.card .s{color:var(--mut);font-size:13px;margin-top:2px}
+.pbar{height:8px;border-radius:4px;background:var(--grid);margin:8px 0 4px;position:relative;overflow:hidden}
+.pbar i{position:absolute;left:0;top:0;bottom:0;background:var(--s3);border-radius:4px}
+.pbar u{position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--mut)}
+.note{color:var(--mut);font-size:14px;max-width:720px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--mut);margin:8px 2px 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .k{display:inline-block;width:18px;border-top:3px solid}
+details{margin-top:20px}
+summary{cursor:pointer;color:var(--mut);font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;background:var(--card);font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--mut);font-weight:600;font-size:12px}
+.err{color:var(--acc)}
+@media(max-width:560px){h1{font-size:1.6rem}.clock{margin-left:0}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body><main>
+<p class="kicker"><a href="./">&larr; results</a> &middot; recorded testnet runs</p>
+<h1>One hour of the bot trading</h1>
+<p class="lede">Replay a real hour from the bot's own logs: the testnet price, what the model forecast each second, and where the bot got filled. The numbers underneath score the forecasts as the hour goes on.</p>
+
+<div class="bar">
+  <div class="seg" role="group" aria-label="Choose a run" id="runs"></div>
+  <button class="play" id="play" type="button">Replay</button>
+  <label class="note" style="font-size:14px">Speed <select id="speed"><option value="30">30&times;</option><option value="60" selected>60&times;</option><option value="120">120&times;</option><option value="300">300&times;</option></select></label>
+  <span class="clock" id="clock" aria-live="off"></span>
+</div>
+<p class="desc" id="desc"></p>
+
+<div class="chart" id="chart">
+  <svg id="svg" role="img" aria-label="Price and forecast replay. Use the slider below or the table at the end of the page."></svg>
+  <div class="tip" id="tip"></div>
+</div>
+<div class="legend" id="legend"></div>
+<input type="range" id="scrub" min="0" max="100" step="1" value="100" aria-label="Time in the run, seconds">
+
+<div class="cards" id="cards"></div>
+<p class="note" id="reading"></p>
+
+<details><summary>Table view: one row per 5 minutes</summary><div id="table"></div></details>
+<p class="note" style="margin-top:28px">Recorded on the Hyperliquid testnet at the exchange minimum size, with a hard loss cap. Forecast scores use the 60 s outcome of each decision; "so far" counts only decisions whose 60 s outcome had happened by the playhead. Small samples are noisy, and the intervals on the <a href="./">main page</a> say how much.</p>
+</main>
+<script>
+"use strict";
+const RUNS=[
+ {key:"ft",label:"Fine-tuned (M10)"},
+ {key:"r7",label:"Original (R7)"},
+ {key:"r6",label:"Original (R6)"}];
+const WHY={signal:"quote on the model's side",capped:"position cap: quote on the other side",late:"late answer: held",invalid:"model link down: held",warmup:"warm-up: held"};
+const $=id=>document.getElementById(id);
+const svg=$("svg"),tip=$("tip"),scrub=$("scrub"),NS="http://www.w3.org/2000/svg";
+const cache={};let D=null,now=0,playing=false,speed=60,raf=0,last=0,G=null,pre=null;
+
+function fmtT(s){s=Math.max(0,Math.round(s));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}
+function fmtP(v){return "$"+v.toLocaleString("en-US",{maximumFractionDigits:0})}
+function sgn(v,d){return (v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(d)}
+function bs(arr,x){let lo=0,hi=arr.length;while(lo<hi){const m=(lo+hi)>>1;if(arr[m]<=x)lo=m+1;else hi=m}return lo} // count of elements <= x
+
+function prep(d){
+  const n=d.t.length,P=new Array(n+1).fill(0),SP=new Array(n+1).fill(0),Y=new Array(n+1).fill(0),SY=new Array(n+1).fill(0),B=new Array(n+1).fill(0);
+  let gaps=[];
+  for(let i=0;i<n;i++){
+    const p=d.p[i],y=d.y[i],ok=p!==null&&y!==null&&y!==undefined;
+    P[i+1]=P[i]+(p!==null?1:0);SP[i+1]=SP[i]+(p!==null?p:0);
+    Y[i+1]=Y[i]+(ok?1:0);SY[i+1]=SY[i]+(ok?y:0);B[i+1]=B[i]+(ok?(p-y)*(p-y):0);
+  }
+  // spans of a dead model link (>= 30 s of "invalid") and warm-up
+  let s=null;
+  for(let i=0;i<n;i++){
+    const inv=d.why[i]==="invalid";
+    if(inv&&s===null)s=d.t[i];
+    if((!inv||i===n-1)&&s!==null){const e=inv?d.t[i]:d.t[i-1];if(e-s>=30)gaps.push([s,e,"model link down"]);s=null}
+  }
+  let wu=-1;for(let i=0;i<n;i++)if(d.why[i]==="warmup")wu=d.t[i];
+  if(wu>0)gaps.unshift([0,wu,"warm-up hold"]);
+  return {P,SP,Y,SY,B,gaps,ft:bs(d.fills.map(f=>f[0]),1e9)}
+}
+
+function layout(){
+  const w=Math.max(320,Math.min(900,$("chart").clientWidth-12));
+  const small=w<520, ml=small?44:56, mr=14;
+  const H=small?420:470, pt=34, ph=small?190:230, ft=pt+ph+30, fh=small?110:120, ax=ft+fh+6;
+  const vals=D.mid.concat(D.mm.filter(v=>v!==null));
+  let lo=Math.min(...vals),hi=Math.max(...vals);const pad=(hi-lo)*.06||1;lo-=pad;hi+=pad;
+  G={w,H,ml,mr,pt,ph,ft,fh,ax,lo,hi,dur:D.seconds,
+     x:t=>ml+t/D.seconds*(w-ml-mr),
+     yp:v=>pt+(1-(v-lo)/(hi-lo))*ph,
+     yf:p=>ft+(1-p)*fh};
+  svg.setAttribute("viewBox",`0 0 ${w} ${H}`);
+  draw();
+}
+function path(ts,vs,y,brk){let s="",pen=false,pt=-1e9;
+  for(let i=0;i<ts.length;i++){const v=vs[i];
+    if(v===null||ts[i]-pt>brk){pen=false}
+    if(v===null){continue}
+    s+=(pen?"L":"M")+G.x(ts[i]).toFixed(1)+" "+y(v).toFixed(1);pen=true;pt=ts[i]}
+  return s}
+function el(t,a,txt){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(txt!==undefined)e.textContent=txt;return e}
+
+function draw(){
+  svg.replaceChildren();
+  const {w,H,ml,mr,pt,ph,ft,fh,ax,lo,hi}=G, xr=w-mr;
+  const defs=el("defs",{});const cp=el("clipPath",{id:"rev"});cp.appendChild(el("rect",{id:"revr",x:0,y:0,width:0,height:H}));defs.appendChild(cp);svg.appendChild(defs);
+  // shaded spans
+  for(const [a,b,l] of pre.gaps){
+    svg.appendChild(el("rect",{class:"shade",x:G.x(a),y:pt,width:Math.max(1,G.x(b)-G.x(a)),height:ph}));
+    svg.appendChild(el("rect",{class:"shade",x:G.x(a),y:ft,width:Math.max(1,G.x(b)-G.x(a)),height:fh}));
+    svg.appendChild(el("text",{x:G.x(a)+4,y:ft+fh-6},l));
+  }
+  // price grid + labels
+  const step=niceStep((hi-lo)/4);
+  for(let v=Math.ceil(lo/step)*step;v<hi;v+=step){const y=G.yp(v);
+    svg.appendChild(el("line",{class:"grid",x1:ml,x2:xr,y1:y,y2:y}));
+    svg.appendChild(el("text",{x:ml-6,y:y+4,"text-anchor":"end"},fmtP(v)))}
+  // forecast grid
+  for(const p of [0,.5,1]){const y=G.yf(p);
+    svg.appendChild(el("line",{class:p===.5?"ref":"grid",x1:ml,x2:xr,y1:y,y2:y}));
+    svg.appendChild(el("text",{x:ml-6,y:y+4,"text-anchor":"end"},p.toFixed(1)))}
+  svg.appendChild(el("text",{x:ml,y:ft-8,class:"t-s3"},"model forecast: chance the price is higher in 60 s (above the dashed line = up)"));
+  // x axis
+  for(let m=0;m*60<=D.seconds;m+=10){const x=G.x(m*60);
+    svg.appendChild(el("line",{class:"axis",x1:x,x2:x,y1:ax,y2:ax+4}));
+    svg.appendChild(el("text",{x,y:ax+17,"text-anchor":x>w-26?"end":"middle"},m+" min"))}
+  // series: faint ghost of the whole run, bright copy clipped to the playhead
+  const L1=path(D.t,D.mid,G.yp,5),L2=D.mm.some(v=>v!==null)?path(D.t,D.mm,G.yp,5):"",L3=path(D.t,D.p,G.yf,5);
+  const mk=(cls)=>{const g=el("g",cls==="ghost"?{class:"ghost"}:{"clip-path":"url(#rev)"});
+    g.appendChild(el("path",{class:"l1",d:L1}));
+    if(L2)g.appendChild(el("path",{class:"l2",d:L2}));
+    g.appendChild(el("path",{class:"l3",d:L3}));
+    if(cls!=="ghost")for(const f of D.fills){const x=G.x(f[0]),y=G.yp(f[2]),u=f[1]==="b";
+      g.appendChild(el("path",{class:"mk",d:u?`M${x} ${y-6}L${x+6} ${y+5}L${x-6} ${y+5}Z`:`M${x} ${y+6}L${x+6} ${y-5}L${x-6} ${y-5}Z`}))}
+    return g};
+  svg.appendChild(mk("ghost"));svg.appendChild(mk("live"));
+  // direct labels at the left of the price panel
+  svg.appendChild(el("text",{x:ml,y:14,class:"t-s1"},"testnet mid (what the bot trades)"));
+  if(L2)svg.appendChild(el("text",{x:ml,y:28,class:"t-s2"},"mainnet mid (read-only, in the model's prompt)"));
+  // playhead + hover
+  svg.appendChild(el("line",{id:"head",class:"head",x1:0,x2:0,y1:pt,y2:ft+fh}));
+  svg.appendChild(el("line",{id:"hair",class:"hair",x1:0,x2:0,y1:pt,y2:ft+fh,style:"display:none"}));
+  // legend (HTML)
+  const lg=$("legend");lg.replaceChildren();
+  const add=(c,t,sty)=>{const s=document.createElement("span");const k=document.createElement("i");k.className="k";k.style.borderColor=c;if(sty)k.style.borderTopWidth=sty;s.appendChild(k);s.appendChild(document.createTextNode(t));lg.appendChild(s)};
+  add("var(--s1)","Testnet mid");if(L2)add("var(--s2)","Mainnet mid");add("var(--s3)","Model forecast");
+  const m=document.createElement("span");m.textContent="▲ buy fill   ▼ sell fill";lg.appendChild(m);
+  $("svg").setAttribute("height",H);
+  update();
+}
+function niceStep(r){const p=Math.pow(10,Math.floor(Math.log10(r))),f=r/p;return (f<1.5?1:f<3.5?2:f<7.5?5:10)*p}
+
+function update(){
+  const x=G.x(now);
+  $("revr").setAttribute("width",x);
+  const h=$("head");h.setAttribute("x1",x);h.setAttribute("x2",x);
+  scrub.value=Math.round(now);$("clock").textContent=fmtT(now)+" / "+fmtT(D.seconds);
+  const i=Math.max(0,bs(D.t,now)-1);
+  const done=bs(D.t,now-60);          // decisions whose 60 s outcome has happened
+  const nf=pre.P[i+1],mp=nf?pre.SP[i+1]/nf:null;
+  const ny=pre.Y[done],ur=ny?pre.SY[done]/ny:null,br=ny?pre.B[done]/ny:null,base=ny?ur*(1-ur):null;
+  const fills=bs(D.fills.map(f=>f[0]),now);
+  const c=$("cards");c.replaceChildren();
+  const card=(l,n,s,extra)=>{const d=document.createElement("div");d.className="card";
+    const a=document.createElement("div");a.className="l";a.textContent=l;const b=document.createElement("div");b.className="n";b.textContent=n;const e=document.createElement("div");e.className="s";e.textContent=s;
+    d.append(a,b,e);if(extra)d.insertBefore(extra,e);c.appendChild(d)};
+  // now
+  const p=D.p[i];let pb=null;
+  if(p!==null){pb=document.createElement("div");pb.className="pbar";const f=document.createElement("i");f.style.width=(p*100).toFixed(0)+"%";const u=document.createElement("u");pb.append(f,u)}
+  card("Forecast right now",p===null?"none":p.toFixed(2),(WHY[D.why[i]]||D.why[i])+(D.a[i]==="b"?" (bid)":D.a[i]==="s"?" (ask)":""),pb);
+  card("Forecasts so far",String(nf),nf?`mean forecast ${mp.toFixed(2)}`:"waiting");
+  card("Price actually rose (60 s)",ur===null?"–":(ur*100).toFixed(0)+"%",ny?`of ${ny} scored forecasts, so far`:"no outcomes yet");
+  card("Brier so far",br===null?"–":br.toFixed(3),ny?`always guessing the up rate: ${base.toFixed(3)} (lower is better)`:"scored after 60 s");
+  card("Fills so far",String(fills),D.key==="ft"&&D.gap[i]!==null?`testnet is ${sgn(D.gap[i],0)} bps vs mainnet (training median about +40)`:"exchange minimum size");
+  const first=(mp!==null&&ur!==null)?(mp<ur-0.05?`The forecast average (${mp.toFixed(2)}) is below how often the price rose (${(ur*100).toFixed(0)}%): the model is leaning down.`:`The forecast average (${mp.toFixed(2)}) is close to how often the price rose (${(ur*100).toFixed(0)}%).`):"";
+  $("reading").textContent=first;
+}
+
+function tipAt(cx,cy){
+  const r=svg.getBoundingClientRect(),vx=(cx-r.left)*G.w/r.width;
+  const t=(vx-G.ml)/(G.w-G.ml-G.mr)*G.dur;
+  const hair=$("hair");
+  if(t<0||t>now||vx<G.ml){tip.style.display="none";hair.style.display="none";return}
+  const i=Math.max(0,bs(D.t,t)-1),x=G.x(D.t[i]);
+  hair.setAttribute("x1",x);hair.setAttribute("x2",x);hair.style.display="";
+  tip.replaceChildren();
+  const row=(c,lbl,val,sub)=>{const d=document.createElement("div");
+    if(c){const k=document.createElement("span");k.className="k";k.style.borderColor=c;d.appendChild(k)}
+    const b=document.createElement("b");b.textContent=val;d.appendChild(b);
+    const s=document.createElement("span");s.className="sub";s.textContent=" "+lbl+(sub?" "+sub:"");d.appendChild(s);tip.appendChild(d)};
+  const h=document.createElement("div");h.className="sub";h.textContent=fmtT(D.t[i])+" into the run";tip.appendChild(h);
+  row("var(--s1)","testnet mid",fmtP(D.mid[i]));
+  if(D.mm[i]!==null)row("var(--s2)","mainnet mid",fmtP(D.mm[i]),"("+sgn(D.gap[i],0)+" bps gap)");
+  row("var(--s3)","forecast",D.p[i]===null?"none":D.p[i].toFixed(2),"("+(WHY[D.why[i]]||D.why[i])+")");
+  if(D.y[i]!==null&&D.y[i]!==undefined&&D.t[i]+60<=now)row(null,"60 s later:",D.y[i]?"price rose":"price fell");
+  tip.style.display="block";
+  const cr=$("chart").getBoundingClientRect();let lx=cx-cr.left+14;if(lx+210>cr.width)lx=cx-cr.left-210;
+  tip.style.left=Math.max(4,lx)+"px";tip.style.top=Math.max(4,cy-cr.top-70)+"px";
+}
+svg.addEventListener("pointermove",e=>tipAt(e.clientX,e.clientY));
+svg.addEventListener("pointerleave",()=>{tip.style.display="none";const h=$("hair");if(h)h.style.display="none"});
+
+function table(){
+  const T=document.createElement("table");
+  const hd=document.createElement("tr");for(const h of ["Minute","Forecasts","Mean forecast","Price rose (60 s)","Fills"]){const c=document.createElement("th");c.textContent=h;hd.appendChild(c)}T.appendChild(hd);
+  for(let m=0;m*60<D.seconds;m+=5){
+    const a=bs(D.t,m*60-1e-6),b=bs(D.t,(m+5)*60-1e-6);let n=0,sp=0,ny=0,sy=0;
+    for(let i=a;i<b;i++){if(D.p[i]!==null){n++;sp+=D.p[i]}if(D.y[i]!==null&&D.y[i]!==undefined){ny++;sy+=D.y[i]}}
+    const f=D.fills.filter(x=>x[0]>=m*60&&x[0]<(m+5)*60).length;
+    const r=document.createElement("tr");
+    for(const v of [m+"–"+(m+5),n,n?(sp/n).toFixed(2):"–",ny?(sy/ny*100).toFixed(0)+"%":"–",f]){const c=document.createElement("td");c.textContent=String(v);r.appendChild(c)}
+    T.appendChild(r)}
+  $("table").replaceChildren(T)}
+
+async function load(key){
+  stop();
+  if(!cache[key]){try{const r=await fetch("data/"+key+".json");if(!r.ok)throw new Error(r.status);cache[key]=await r.json()}
+    catch(e){$("reading").textContent="Could not load the run data ("+e.message+").";$("reading").className="note err";return}}
+  D=cache[key];pre=prep(D);const t0=+new URLSearchParams(location.search).get("t");now=t0>0&&t0<D.seconds?t0:D.seconds;
+  scrub.max=D.seconds;
+  $("desc").textContent=D.desc+" · "+D.fills.length+" fills";
+  for(const b of $("runs").children)b.setAttribute("aria-pressed",b.dataset.key===key?"true":"false");
+  layout();table();
+}
+function stop(){playing=false;cancelAnimationFrame(raf);$("play").textContent="Replay"}
+function tick(ts){if(!playing)return;const dt=(ts-last)/1000;last=ts;now=Math.min(D.seconds,now+dt*speed);update();
+  if(now>=D.seconds){stop();return}raf=requestAnimationFrame(tick)}
+$("play").addEventListener("click",()=>{
+  if(playing){stop();return}
+  if(now>=D.seconds-1)now=0;playing=true;$("play").textContent="Pause";last=performance.now();raf=requestAnimationFrame(tick)});
+scrub.addEventListener("input",()=>{if(playing)stop();now=+scrub.value;update()});
+$("speed").addEventListener("change",e=>{speed=+e.target.value});
+for(const r of RUNS){const b=document.createElement("button");b.type="button";b.textContent=r.label;b.dataset.key=r.key;b.setAttribute("aria-pressed","false");b.addEventListener("click",()=>load(r.key));$("runs").appendChild(b)}
+new ResizeObserver(()=>{if(D)layout()}).observe($("chart"));
+const q=new URLSearchParams(location.search).get("run");load(RUNS.some(r=>r.key===q)?q:"ft");
+</script></body></html>

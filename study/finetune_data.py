@@ -12,6 +12,10 @@ Replay matches the bot: books in receive order, every trade received up to the b
 receive time on the tape, mids kept by receive time, `jevhl.maker.build_input` and
 `jevhl.prompt.render_maker_context` unchanged. The split is by time, as in study/books.py:
 the first 60% of rows train, one horizon is skipped, the rest is held out.
+
+The mainnet block's wording and maths live in the bot (milestone 10: `jevhl.prompt`'s
+mainnet wording, `jevhl.mainnet.mainnet_input`), so the fine-tuned model's training prompt and
+the live prompt come from the same code. Moving them there left the rows byte-identical.
 """
 
 from __future__ import annotations
@@ -21,48 +25,20 @@ import bisect
 import json
 import sqlite3
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 
 from jevhl.feed import Book, Print, TradeTape
+from jevhl.mainnet import mainnet_input
 from jevhl.maker import build_input
-from jevhl.prompt import (
-    MISSING,
-    OPTIONS,
-    QUESTION_PREFIX,
-    price,
-    question_text,
-    render_maker_context,
-)
+from jevhl.prompt import OPTIONS, question_text, render_maker_context
 
 HORIZON_S = 60.0
 STRIDE = 5
-WARMUP_S = 310.0
-MAX_BOOK_AGE_S = 5.0
+WARMUP_S = 310.0  # the bot holds as long with MAKER_PROMPT=mainnet (jevhl.mainnet.WARMUP_S)
+MAX_BOOK_AGE_S = 5.0  # label freshness (the mainnet block's own bound is MAINNET_MAX_AGE_S)
 TRAIN_SHARE = 0.6
 KEEP_MIDS_S = 310.0  # the bot keeps max(RETURN_WINDOWS_S) + 10 s of mids
-
-# ---- MAINNET BLOCK: assistant's draft wording, for the user to edit (user chose to add
-# mainnet prices, 2026-10-26). M10 would move it into src/jevhl/prompt.py unchanged. ----
-MAINNET_WINDOWS_S = (5, 15, 60)
-MAINNET_LINE = ("Mainnet (the main Hyperliquid market) BTC mid {mid}; this market's mid is "
-                "{gap:+.1f} bps from it.")
-MAINNET_RETURNS_LINE = "Mainnet mid change: {parts}"
-MAINNET_RETURN_PART = "{w:g} s {r}"
-# ---- end of mainnet block ----
-
-
-def mainnet_block(m_mid: float, gap_bps: float, rets: dict[float, float | None]) -> str:
-    parts = [MAINNET_RETURN_PART.format(w=w, r=MISSING if r is None else f"{r:+.1f} bps")
-             for w, r in rets.items()]
-    return "\n".join([MAINNET_LINE.format(mid=price(m_mid, 1), gap=gap_bps),
-                      MAINNET_RETURNS_LINE.format(parts=", ".join(parts))])
-
-
-def with_mainnet(context: str, block: str) -> str:
-    """Today's prompt with the mainnet block inserted just before the question line."""
-    head, sep, q = context.rpartition("\n" + QUESTION_PREFIX)
-    assert sep, "prompt has no question line"
-    return f"{head}\n{block}{sep}{q}"
 
 
 class Series:
@@ -108,24 +84,19 @@ def build_rows(books: list[Book], prints: list[Print], main: Series,
         if k % stride or now < t0 + WARMUP_S or now + horizon_s > t_end:
             continue
         fut, fage = mids_series.at(now + horizon_s)
-        m_now, mage = main.at(now)
-        if fut is None or fage > MAX_BOOK_AGE_S or m_now is None or mage > MAX_BOOK_AGE_S:
+        mi = mainnet_input(now, book.mid, main.at)
+        if fut is None or fage > MAX_BOOK_AGE_S or mi is None:
             continue
         move = (fut / book.mid - 1) * 1e4
         if move == 0:
             continue
-        rets = {}
-        for w in MAINNET_WINDOWS_S:
-            past, page = main.at(now - w)
-            rets[w] = None if past is None or page > MAX_BOOK_AGE_S else (m_now / past - 1) * 1e4
-        ctx = render_maker_context(build_input(book, list(mids), tape, [], horizon_s))
+        inp = build_input(book, list(mids), tape, [], horizon_s)
         rows.append({
             "t": now, "mid": book.mid, "move_bps": move,
             "gold": 0 if move > 0 else 1,  # index into OPTIONS: 0 "up", 1 "down"
             "question": question_text(horizon_s), "options": list(OPTIONS),
-            "context": ctx,
-            "context_mainnet": with_mainnet(
-                ctx, mainnet_block(m_now, (book.mid / m_now - 1) * 1e4, rets)),
+            "context": render_maker_context(inp),
+            "context_mainnet": render_maker_context(replace(inp, mainnet=mi)),
         })
     return rows
 
